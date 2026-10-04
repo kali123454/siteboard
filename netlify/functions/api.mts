@@ -209,6 +209,24 @@ export default async (req: Request) => {
       return json({ ok: true });
     }
 
+    /* התראת בדיקה לעצמי — מחזיר מה קרה עם כל מכשיר רשום */
+    if (route === "testpush") {
+      if (!initPush()) return json({ ok: false, reason: "no-keys", subs: 0 });
+      const subs = s.subs[me] || [];
+      const results: any[] = [];
+      for (const sub of subs) {
+        try {
+          const r: any = await webpush.sendNotification(sub, JSON.stringify({ title: "בדיקה", body: "ההתראות עובדות ✓", url: isMgr ? "/manager" : "/team" }), { TTL: 600 });
+          results.push({ ok: true, status: r?.statusCode, host: new URL(sub.endpoint).host });
+        } catch (e: any) {
+          results.push({ ok: false, status: e?.statusCode, host: new URL(sub.endpoint).host, body: String(e?.body || e?.message || "").slice(0, 200) });
+          if (e?.statusCode === 404 || e?.statusCode === 410) s.subs[me] = (s.subs[me] || []).filter((x) => x.endpoint !== sub.endpoint);
+        }
+      }
+      await save(s);
+      return json({ ok: results.some((r) => r.ok), subs: subs.length, results });
+    }
+
     if (route === "adduser" || route === "resetpw") {
       if (!isMgr) return fail("רק מנהל יכול לעשות את זה", 403);
       const id = String(body.username || "").trim().toLowerCase();

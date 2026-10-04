@@ -147,6 +147,7 @@ a.tel{color:var(--ink)}
 #notice .nx{border:0;background:none;font-size:22px;line-height:1;color:var(--muted);padding:0 4px}
 .pushcard{display:flex;flex-wrap:wrap;align-items:center;gap:10px 14px;border-inline-start:5px solid var(--accent)}
 .pushcard .grow{flex:1 1 200px}
+.pushcard.ok{border-inline-start-color:var(--ok);padding-block:10px}
 .log{font-size:13px;color:var(--muted);display:grid;gap:2px;border-top:1px solid var(--line);padding-top:8px}
 @media (min-width:640px){.scrim{align-items:center}}
 @media (prefers-reduced-motion:no-preference){.cell,.btn{transition:filter .15s}.cell:hover,.btn:hover{filter:brightness(.95)}}
@@ -323,7 +324,10 @@ async function syncPush(){
   else { pushState="off"; render(); }
 }
 function pushCard(){
-  if(!me() || pushState==="on" || pushState==="unknown") return "";
+  if(!me()) return "";
+  const test = `<button class="btn ghost sm" data-act="testpush">שלח לי התראת בדיקה</button>`;
+  if(pushState==="on") return `<div class="card pushcard ok"><div class="grow"><b>✓ ההתראות פועלות בטלפון הזה</b></div>${test}</div>`;
+  if(pushState==="unknown") return "";
   if(isIOS && !standalone) return `<div class="card pushcard"><b>רוצה התראות לטלפון?</b><p class="note" style="margin:4px 0 0">באייפון צריך קודם להתקין: כפתור השיתוף ⬆️ ואז "הוסף למסך הבית", ולפתוח מהאייקון.</p></div>`;
   if(!pushSupported || !vapidPublic) return "";
   if(Notification.permission==="denied") return `<div class="card pushcard"><b>ההתראות חסומות</b><p class="note" style="margin:4px 0 0">כדי לקבל התראות, אפשר אותן בהגדרות הטלפון לאפליקציה הזו.</p></div>`;
@@ -590,6 +594,15 @@ document.addEventListener("click", async e=>{
       if(perm==="granted"){ try{ await subscribePush(); showNotice('<div class="ntext"><b>✓ ההתראות פועלות</b><span>מעכשיו הודעות יקפצו בטלפון.</span></div>'); }catch(e){ showErr("לא הצלחנו להפעיל התראות. נסה שוב."); } }
       else pushState="off";
       render(); }
+    if(a==="testpush"){ el.disabled=true; el.textContent="שולח…";
+      const info = `מצב: ${standalone?"נפתח מהאייקון":"נפתח מדפדפן"} · הרשאה: ${"Notification" in window?Notification.permission:"אין"}`;
+      try{
+        const r = await fetch("/api/testpush",{method:"POST",headers:{"content-type":"application/json",authorization:"Bearer "+token},body:"{}"}).then(x=>x.json());
+        if(r.ok) showNotice(`<div class="ntext"><b>✓ ההתראה נשלחה</b><span>אמורה לקפוץ תוך כמה שניות. נעל את המסך כדי לראות. ${esc(info)}</span></div><button class="nx" data-act="hidenotice">×</button>`);
+        else if(!r.subs) showNotice(`<div class="ntext"><b>הטלפון הזה לא רשום להתראות</b><span>לחץ "הפעל התראות" ואשר. ${esc(info)}</span></div><button class="nx" data-act="hidenotice">×</button>`);
+        else showNotice(`<div class="ntext"><b>השליחה נכשלה</b><span>${esc(JSON.stringify(r.results))} · ${esc(info)}</span></div><button class="nx" data-act="hidenotice">×</button>`);
+      }catch(e){ showErr("אין חיבור לשרת"); }
+      el.disabled=false; el.textContent="שלח לי התראת בדיקה"; }
     if(a==="openproj"){ ui.pid=el.dataset.id; ls.set("siteboard-pid",ui.pid); ui.tab="board"; render(); }
     if(a==="delproj"){ if(el.dataset.confirm!=="1"){ el.dataset.confirm="1"; el.textContent="בטוח? כל ההתקדמות תימחק"; return; }
       await remove("projects", el.dataset.id); }
