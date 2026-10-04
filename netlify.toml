@@ -6,10 +6,10 @@
 
 [[redirects]]
   from = "/manager"
-  to = "/index.html"
+  to = "/manager.html"
   status = 200
 
 [[redirects]]
   from = "/team"
-  to = "/index.html"
+  to = "/team.html"
   status = 200
