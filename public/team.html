@@ -315,7 +315,9 @@ async function subscribePush(){
   const reg = await navigator.serviceWorker.ready;
   let sub = await reg.pushManager.getSubscription();
   if(!sub) sub = await reg.pushManager.subscribe({userVisibleOnly:true, applicationServerKey:b64ToBytes(vapidPublic)});
-  await fetch("/api/subscribe",{method:"POST",headers:{"content-type":"application/json",authorization:"Bearer "+token},body:JSON.stringify({sub:sub.toJSON()})});
+  const j = sub.toJSON();
+  const res = await fetch("/api/subscribe",{method:"POST",headers:{"content-type":"application/json",authorization:"Bearer "+token},body:JSON.stringify({sub:{endpoint:j.endpoint||sub.endpoint,keys:j.keys}})});
+  if(!res.ok){ const t = await res.text().catch(()=> ""); throw new Error("subscribe "+res.status+" "+t.slice(0,120)); }
   pushState = "on";
 }
 async function syncPush(){
@@ -597,7 +599,10 @@ document.addEventListener("click", async e=>{
     if(a==="testpush"){ el.disabled=true; el.textContent="שולח…";
       const info = `מצב: ${standalone?"נפתח מהאייקון":"נפתח מדפדפן"} · הרשאה: ${"Notification" in window?Notification.permission:"אין"}`;
       try{
-        const r = await fetch("/api/testpush",{method:"POST",headers:{"content-type":"application/json",authorization:"Bearer "+token},body:"{}"}).then(x=>x.json());
+        const tp = () => fetch("/api/testpush",{method:"POST",headers:{"content-type":"application/json",authorization:"Bearer "+token},body:"{}"}).then(x=>x.json());
+        let r = await tp(), regErr = "";
+        if(!r.subs){ try{ await subscribePush(); r = await tp(); }catch(e){ regErr = String(e.message||e); } }
+        if(regErr){ showNotice(`<div class="ntext"><b>הרישום להתראות נכשל</b><span>${esc(regErr)} · ${esc(info)}</span></div><button class="nx" data-act="hidenotice">×</button>`); el.disabled=false; el.textContent="שלח לי התראת בדיקה"; return; }
         if(r.ok) showNotice(`<div class="ntext"><b>✓ ההתראה נשלחה</b><span>אמורה לקפוץ תוך כמה שניות. נעל את המסך כדי לראות. ${esc(info)}</span></div><button class="nx" data-act="hidenotice">×</button>`);
         else if(!r.subs) showNotice(`<div class="ntext"><b>הטלפון הזה לא רשום להתראות</b><span>לחץ "הפעל התראות" ואשר. ${esc(info)}</span></div><button class="nx" data-act="hidenotice">×</button>`);
         else showNotice(`<div class="ntext"><b>השליחה נכשלה</b><span>${esc(JSON.stringify(r.results))} · ${esc(info)}</span></div><button class="nx" data-act="hidenotice">×</button>`);
