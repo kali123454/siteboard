@@ -31,6 +31,7 @@
   --accent:#f2b705; --accent-ink:#151a18; --steel:#0f1311;
   --ok:#5cc98a; --ok-bg:#173726; --wait:#f2c94c; --wait-bg:#3a3010; --bad:#f08077; --bad-bg:#3d1d1a; --idle-bg:#262e2b; color-scheme:dark}
 *{box-sizing:border-box}
+[hidden]{display:none!important}
 html,body{min-height:100%}
 body{background:var(--bg);color:var(--ink);font-family:var(--f-body);font-size:16px;line-height:1.5;direction:rtl}
 .wrap{max-width:1100px;margin:0 auto;padding-inline:16px;padding-block:20px 48px}
@@ -141,6 +142,14 @@ textarea.need{border-color:var(--bad);outline:2px solid var(--bad)}
 .orow:last-child{border-bottom:0}
 .op{text-align:start}
 a.tel{color:var(--ink)}
+#notice{position:fixed;inset-inline:12px;bottom:calc(12px + env(safe-area-inset-bottom,0px));z-index:30;background:var(--surface);border:1px solid var(--line);border-inline-start:5px solid var(--ok);border-radius:10px;box-shadow:0 6px 24px rgba(0,0,0,.18);padding:10px 12px;display:flex;flex-wrap:wrap;align-items:center;gap:8px 10px;max-width:560px;margin-inline:auto}
+#notice .ntext{flex:1 1 220px;min-width:0;display:grid}
+#notice .ntext span{font-size:14px;color:var(--muted)}
+#notice .nx{border:0;background:none;font-size:22px;line-height:1;color:var(--muted);padding:0 4px}
+.pushcard{display:flex;flex-wrap:wrap;align-items:center;gap:10px 14px;border-inline-start:5px solid var(--accent)}
+.pushcard .grow{flex:1 1 200px}
+.pushcard.ok{border-inline-start-color:var(--ok);padding-block:10px}
+tbody th.uname{font-family:var(--f-body);font-weight:700;white-space:normal;text-align:start;min-width:90px}
 .log{font-size:13px;color:var(--muted);display:grid;gap:2px;border-top:1px solid var(--line);padding-top:8px}
 @media (min-width:640px){.scrim{align-items:center}}
 @media (prefers-reduced-motion:no-preference){.cell,.btn{transition:filter .15s}.cell:hover,.btn:hover{filter:brightness(.95)}}
@@ -162,17 +171,36 @@ const STATUS = {
 const DEFAULT_TRADES = ["טיח","אינסטלציה","חשמל","ריצוף","צבע"];
 const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
 const fmt = ts => ts ? new Date(ts).toLocaleString("he-IL",{day:"2-digit",month:"2-digit",hour:"2-digit",minute:"2-digit"}) : "";
-const floorName = f => f === 0 ? "קרקע" : "קומה " + f;
+/* סוגי פרויקטים: בניין לפי קומות, והשאר לפי רשימת יחידות (אזורים / בתים / חדרים) */
+const PTYPES = {
+  building:  {label:"בניין",          one:"קומה", many:"קומות", count:"מספר קומות (מעל קרקע)", def:5},
+  house:     {label:"בית פרטי",       one:"אזור", many:"אזורים", units:["מרתף","קומת קרקע","קומה א׳","גג","חצר ופיתוח"]},
+  street:    {label:"רחוב / שכונה",   one:"בית",  many:"בתים",  count:"מספר בתים / מגרשים", def:8, prefix:"בית "},
+  apartment: {label:"שיפוץ דירה",     one:"חדר",  many:"חדרים", units:["סלון","מטבח","חדר שינה","חדר ילדים","חדר רחצה","שירותים","מרפסת"]},
+  office:    {label:"משרד / מסחרי",   one:"אזור", many:"אזורים", units:["כניסה ולובי","אופן ספייס","חדרי ישיבות","מטבחון","שירותים","חדר תקשורת"]},
+  infra:     {label:"תשתיות וכבישים", one:"קטע",  many:"קטעים", count:"מספר קטעים", def:6, prefix:"קטע "}
+};
+const ptype = (p=project()) => PTYPES[p.type] ? p.type : "building";
+const PT = (p=project()) => PTYPES[ptype(p)];
+const unitsOf = (p=project()) => ptype(p)==="building" ? null : (p.units||[]);
+function makeUnits(type, n){
+  const t = PTYPES[type];
+  const names = t.units ? t.units : Array.from({length:Math.max(1,Math.min(200,n||t.def))},(_,i)=>t.prefix+(i+1));
+  return names.map((name,i)=>({id:i, name}));
+}
+const floorName = f => { const U = unitsOf(); if(!U) return f === 0 ? "קרקע" : "קומה " + f; const u = U.find(x=>x.id===f); return u ? u.name : PT().one; };
+const floorShort = f => { const U = unitsOf(); if(!U) return f===0 ? "ק׳" : String(f); return esc(floorName(f)); };
+const unitCount = p => { const U = unitsOf(p); return U ? U.length : (+p.floors||0)+1; };
 const ls = {get(k){try{return localStorage.getItem(k)}catch(e){return null}}, set(k,v){try{v==null?localStorage.removeItem(k):localStorage.setItem(k,v)}catch(e){}}};
 
 /* ---------- שרת ---------- */
 const data = { users:{}, tasks:{}, projects:{}, messages:{} };
-let creds = {}, loaded = false, isSetup = false, projectName = "";
+let creds = {}, loaded = false, isSetup = false, projectName = "", vapidPublic = "";
 let token = ls.get("siteboard-token");
 
 function apply(st){
   if(!st) return;
-  isSetup = !!st.setup; projectName = st.projectName || "";
+  isSetup = !!st.setup; projectName = st.projectName || ""; vapidPublic = st.vapidPublic || vapidPublic;
   ui.me = st.me || null;
   data.users = st.users || {}; data.tasks = st.tasks || {}; data.messages = st.messages || {};
   data.projects = st.projects || {}; creds = st.creds || {};
@@ -189,7 +217,7 @@ async function api(path, body){
   const out = await res.json().catch(()=>({error:"אין חיבור לשרת. בדוק את האינטרנט ונסה שוב."}));
   if(res.status===401 && path!=="login"){ token=null; ls.set("siteboard-token",null); ui.me=null; }
   if(!res.ok) throw new Error(out.error || "השמירה נכשלה. נסה שוב.");
-  if(out.token){ token = out.token; ls.set("siteboard-token", token); }
+  if(out.token){ token = out.token; ls.set("siteboard-token", token); setTimeout(syncPush, 300); }
   apply(out.state || out);
   render();
   return out;
@@ -224,7 +252,7 @@ function visibleProjects(){
     return !A.length || A.some(([,v])=>v===ui.me); });
 }
 const trades = () => project().trades || [];
-const floorsList = () => { const n = +project().floors || 0; const a=[]; for(let i=n;i>=0;i--) a.push(i); return a; };
+const floorsList = () => { const U = unitsOf(); if(U) return U.map(u=>u.id); const n = +project().floors || 0; const a=[]; for(let i=n;i>=0;i--) a.push(i); return a; };
 const localId = (f,k) => "f"+f+"_"+k;
 const taskId = (f,k) => ui.pid+"__"+localId(f,k);
 const task = (f,k) => data.tasks[taskId(f,k)] || {floor:f,trade:k,status:"pending",log:[]};
@@ -280,18 +308,53 @@ function groupBlock(list, text){
     ${withPhone.length?`<div class="row"><a class="btn" href="${smsHref(withPhone.map(x=>x.u.phone), text)}">שלח SMS לכולם (${withPhone.length})</a>
     <button class="btn ghost" data-act="copy" data-text="${esc(text)}">העתק טקסט</button></div>`:""}</div>`;
 }
+/* אחרי פעולה: הודעה קטנה שנעלמת לבד. ההתראה כבר נשלחה לטלפון; SMS רק אם רוצים */
 function smsModal(phone, name, text, title, extra=""){
-  const href = phone ? `sms:${phone.replace(/[^\d+]/g,"")}?&body=${encodeURIComponent(text)}` : "";
-  openModal(`<h3>${esc(title)}</h3>
-    <p style="margin:0">ההודעה נשמרה באפליקציה${name?` ו${esc(name)} יראה אותה כשייכנס`:""}. אפשר לשלוח גם SMS:</p>
-    <div class="smsbox">${esc(text)}</div>
-    ${phone?`<div>טלפון: <b class="mono" style="user-select:all">${esc(phone)}</b></div>
-      <div class="row"><a class="btn" href="${href}">פתח SMS בטלפון</a>
-      <button class="btn ghost" data-act="copy" data-text="${esc(text)}">העתק טקסט</button>
-      <button class="btn ghost" data-act="close">סגירה</button></div>
-      <p class="note" style="margin:0">הכפתור פותח את אפליקציית ההודעות בטלפון. אם לא נפתח, העתק את הטקסט ושלח ידנית.</p>`
-    :`<p class="muted" style="margin:0">לא הוגדר מספר טלפון${name?` ל${esc(name)}`:""}. אפשר להוסיף בלשונית עובדים.</p>
-      <div class="row"><button class="btn ghost" data-act="close">סגירה</button></div>`}${extra}`);
+  const sms = phone ? `<a class="btn ghost sm" href="${smsHref([phone], text)}">גם SMS</a>` : "";
+  showNotice(`<div class="ntext"><b>✓ ${esc(title)}</b><span>${name?`נשלחה התראה ל${esc(name)}`:"נשלחה התראה"}</span></div>${sms}${extra}<button class="nx" data-act="hidenotice" aria-label="סגירה">×</button>`);
+}
+function groupLink(list, text){
+  const ph = list.filter(x=>x.u.phone);
+  if(!list.length) return "";
+  return `<div class="ntext"><span>וגם ל-${list.length} בעלי מקצוע: ${list.map(x=>esc(x.u.name)).join(", ")}</span></div>${ph.length?`<a class="btn ghost sm" href="${smsHref(ph.map(x=>x.u.phone), text)}">גם SMS</a>`:""}`;
+}
+let noticeTimer;
+function showNotice(html){
+  let n = document.getElementById("notice");
+  if(!n){ n = document.createElement("div"); n.id="notice"; n.setAttribute("role","status"); document.body.appendChild(n); }
+  n.innerHTML = html; n.hidden = false;
+  clearTimeout(noticeTimer); noticeTimer = setTimeout(()=>{ n.hidden = true; }, 9000);
+}
+
+/* ---------- התראות לטלפון ---------- */
+const isIOS = /iphone|ipad|ipod/i.test(navigator.userAgent);
+const standalone = matchMedia("(display-mode: standalone)").matches || navigator.standalone === true;
+const pushSupported = "serviceWorker" in navigator && "PushManager" in window && "Notification" in window;
+let pushState = "unknown"; /* unknown | on | off */
+function b64ToBytes(b64){ const p="=".repeat((4-b64.length%4)%4); const raw=atob((b64+p).replace(/-/g,"+").replace(/_/g,"/")); return Uint8Array.from(raw,c=>c.charCodeAt(0)); }
+async function subscribePush(){
+  const reg = await navigator.serviceWorker.ready;
+  let sub = await reg.pushManager.getSubscription();
+  if(!sub) sub = await reg.pushManager.subscribe({userVisibleOnly:true, applicationServerKey:b64ToBytes(vapidPublic)});
+  const j = sub.toJSON();
+  const res = await fetch("/api/subscribe",{method:"POST",headers:{"content-type":"application/json",authorization:"Bearer "+token},body:JSON.stringify({sub:{endpoint:j.endpoint||sub.endpoint,keys:j.keys}})});
+  if(!res.ok){ const t = await res.text().catch(()=> ""); throw new Error("subscribe "+res.status+" "+t.slice(0,120)); }
+  pushState = "on";
+}
+async function syncPush(){
+  if(!pushSupported || !vapidPublic || !token || !me()) return;
+  if(Notification.permission==="granted"){ try{ await subscribePush(); }catch(e){ pushState="off"; } render(); }
+  else { pushState="off"; render(); }
+}
+function pushCard(){
+  if(!me()) return "";
+  const test = `<button class="btn ghost sm" data-act="testpush">שלח לי התראת בדיקה</button>`;
+  if(pushState==="on") return `<div class="card pushcard ok"><div class="grow"><b>✓ ההתראות פועלות בטלפון הזה</b></div>${test}</div>`;
+  if(pushState==="unknown") return "";
+  if(isIOS && !standalone) return `<div class="card pushcard"><b>רוצה התראות לטלפון?</b><p class="note" style="margin:4px 0 0">באייפון צריך קודם להתקין: כפתור השיתוף ⬆️ ואז "הוסף למסך הבית", ולפתוח מהאייקון.</p></div>`;
+  if(!pushSupported || !vapidPublic) return "";
+  if(Notification.permission==="denied") return `<div class="card pushcard"><b>ההתראות חסומות</b><p class="note" style="margin:4px 0 0">כדי לקבל התראות, אפשר אותן בהגדרות הטלפון לאפליקציה הזו.</p></div>`;
+  return `<div class="card pushcard"><div class="grow"><b>קבל התראות לטלפון</b><p class="note" style="margin:2px 0 0">הודעות יקפצו לבד, גם כשהאפליקציה סגורה.</p></div><button class="btn" data-act="enablepush">הפעל התראות</button></div>`;
 }
 
 /* ---------- render ---------- */
@@ -309,7 +372,7 @@ function render(){
   const head = `<div class="top"><div class="ptitle"><h1>${esc(project().name)}</h1>${switcher}</div>
     <div class="who"><span class="role">${u.role==="manager"?"מנהל":esc(tradeLabel(u.trade))}</span><b>${esc(u.name)}</b>
     <button class="btn ghost sm" data-act="logout">יציאה</button></div></div>`;
-  app.innerHTML = demo + head + (u.role==="manager" ? managerView() : workerView(u));
+  app.innerHTML = demo + head + pushCard() + (u.role==="manager" ? managerView() : workerView(u));
 }
 
 function setupView(){
@@ -344,7 +407,7 @@ function loginView(){
 
 function managerView(){
   const un = myMsgs().filter(([,m])=>!m.read).length;
-  const tabs = [["board","לוח בקרה"+(un?` (${un})`:"")],["workers","עובדים"],["assign","שיבוץ לקומות"],["settings","קומות ומקצועות"]];
+  const tabs = [["board","לוח בקרה"+(un?` (${un})`:"")],["workers","עובדים"],["assign","שיבוץ"],["settings","פרויקטים ומקצועות"]];
   const nav = `<div class="tabs" role="tablist">${tabs.map(([k,t])=>`<button role="tab" aria-selected="${ui.tab===k}" data-tab="${k}">${t}</button>`).join("")}</div>`;
   let body = "";
   if(ui.tab==="board") body = boardView();
@@ -356,7 +419,7 @@ function managerView(){
 
 function boardView(){
   const T = trades(), F = floorsList();
-  if(!T.length) return `<div class="card"><h2>אין עדיין מקצועות</h2><p class="muted">הוסף מקצועות בלשונית "קומות ומקצועות".</p></div>`;
+  if(!T.length) return `<div class="card"><h2>אין עדיין מקצועות</h2><p class="muted">הוסף מקצועות בלשונית "פרויקטים ומקצועות".</p></div>`;
   let total=0, approved=0, waiting=[], rejected=0;
   F.forEach(f=>T.forEach(t=>{ total++; const s=task(f,t.key); if(s.status==="approved")approved++; if(s.status==="rejected")rejected++; if(s.status==="done")waiting.push(s); }));
   const pct = total ? Math.round(approved/total*100) : 0;
@@ -371,11 +434,11 @@ function boardView(){
       <div class="note">סומן ע"י ${esc(s.doneBy)} · ${fmt(s.doneAt)}${s.note?` · "${esc(s.note)}"`:""}</div></div>
       <button class="btn ok sm" data-act="approve" data-f="${s.floor}" data-k="${s.trade}">אישור</button>
       <button class="btn bad sm" data-act="open" data-f="${s.floor}" data-k="${s.trade}">החזרה</button></div>`).join("")}</div>` : "";
-  const grid = `<div class="gridwrap"><table><thead><tr><th>קומה</th>${T.map(t=>`<th>${esc(t.label)}</th>`).join("")}</tr></thead><tbody>
-    ${F.map(f=>`<tr><th>${f===0?"ק׳":f}</th>${T.map(t=>{const s=task(f,t.key);return `<td><button class="cell ${STATUS[s.status].c}" data-act="open" data-f="${f}" data-k="${t.key}" aria-label="${esc(t.label)} ${floorName(f)}: ${STATUS[s.status].t}">${STATUS[s.status].t}${assignee(f,t.key)?`<span class="who-s">${esc(data.users[assignee(f,t.key)].name)}</span>`:""}</button></td>`}).join("")}</tr>`).join("")}
+  const grid = `<div class="gridwrap"><table><thead><tr><th>${PT().one}</th>${T.map(t=>`<th>${esc(t.label)}</th>`).join("")}</tr></thead><tbody>
+    ${F.map(f=>`<tr><th${unitsOf()?' class="uname"':""}>${floorShort(f)}</th>${T.map(t=>{const s=task(f,t.key);return `<td><button class="cell ${STATUS[s.status].c}" data-act="open" data-f="${f}" data-k="${t.key}" aria-label="${esc(t.label)} ${floorName(f)}: ${STATUS[s.status].t}">${STATUS[s.status].t}${assignee(f,t.key)?`<span class="who-s">${esc(data.users[assignee(f,t.key)].name)}</span>`:""}</button></td>`}).join("")}</tr>`).join("")}
   </tbody></table></div>
   <div class="legend">${Object.values(STATUS).map(s=>`<span class="${s.c}">${s.t}</span>`).join("")}</div>`;
-  return stats + broadcastCard() + queue + inboxView() + `<h2 style="font-size:20px;margin-bottom:10px">חתך הבניין</h2>` + grid;
+  return stats + broadcastCard() + queue + inboxView() + `<h2 style="font-size:20px;margin-bottom:10px">${ptype()==="building"?"חתך הבניין":"מצב העבודות לפי "+PT().many}</h2>` + grid;
 }
 
 function workersView(){
@@ -413,36 +476,43 @@ function assignView(){
   const T = trades(), F = floorsList();
   const W = k => Object.entries(data.users).filter(([,u])=>u.role==="worker"&&u.trade===k);
   if(!T.length) return `<div class="card"><p>הוסף קודם מקצועות.</p></div>`;
-  return `<div class="card"><h2>מי עובד באיזו קומה</h2>
-    <p class="note" style="margin-top:-6px">לכל קומה בחר את בעל המקצוע. קומה בלי שיבוץ פתוחה לכל בעלי המקצוע מאותו תחום. בעל מקצוע רואה רק את הקומות שלו.</p>
-    <div class="gridwrap"><table class="assign"><thead><tr><th>קומה</th>${T.map(t=>`<th>${esc(t.label)}</th>`).join("")}</tr></thead><tbody>
-    <tr class="allrow"><th>כל הקומות</th>${T.map(t=>`<td><select id="all-${t.key}" data-k="${t.key}" class="assign-all" aria-label="שבץ ${esc(t.label)} לכל הקומות"><option value="">שבץ לכולן…</option>${W(t.key).map(([id,u])=>`<option value="${esc(id)}">${esc(u.name)}</option>`).join("")}</select></td>`).join("")}</tr>
-    ${F.map(f=>`<tr><th>${f===0?"ק׳":f}</th>${T.map(t=>{const a=assignee(f,t.key);return `<td><select id="as-${f}-${t.key}" class="assign-one" data-f="${f}" data-k="${t.key}" aria-label="${esc(t.label)} ${floorName(f)}"><option value="">— פתוח —</option>${W(t.key).map(([id,u])=>`<option value="${esc(id)}" ${id===a?"selected":""}>${esc(u.name)}</option>`).join("")}</select></td>`}).join("")}</tr>`).join("")}
+  return `<div class="card"><h2>שיבוץ לפי ${PT().many}</h2>
+    <p class="note" style="margin-top:-6px">בכל שורה בחר את בעל המקצוע. שורה בלי שיבוץ פתוחה לכל בעלי המקצוע מאותו תחום. בעל מקצוע רואה רק את מה ששובץ אליו.</p>
+    <div class="gridwrap"><table class="assign"><thead><tr><th>${PT().one}</th>${T.map(t=>`<th>${esc(t.label)}</th>`).join("")}</tr></thead><tbody>
+    <tr class="allrow"><th>כל ה${PT().many}</th>${T.map(t=>`<td><select id="all-${t.key}" data-k="${t.key}" class="assign-all" aria-label="שבץ ${esc(t.label)} לכולם"><option value="">שבץ לכולן…</option>${W(t.key).map(([id,u])=>`<option value="${esc(id)}">${esc(u.name)}</option>`).join("")}</select></td>`).join("")}</tr>
+    ${F.map(f=>`<tr><th${unitsOf()?' class="uname"':""}>${floorShort(f)}</th>${T.map(t=>{const a=assignee(f,t.key);return `<td><select id="as-${f}-${t.key}" class="assign-one" data-f="${f}" data-k="${t.key}" aria-label="${esc(t.label)} ${floorName(f)}"><option value="">— פתוח —</option>${W(t.key).map(([id,u])=>`<option value="${esc(id)}" ${id===a?"selected":""}>${esc(u.name)}</option>`).join("")}</select></td>`}).join("")}</tr>`).join("")}
     </tbody></table></div></div>`;
 }
 
 function settingsView(){
   const p = project();
   const P = visibleProjects();
+  const U = unitsOf(p);
+  const typeOpts = Object.entries(PTYPES).map(([k,t])=>`<option value="${k}">${t.label}</option>`).join("");
   return `<div class="card"><h2>פרויקטים (${P.length})</h2>
-    <div class="list">${P.map(pid=>`<div class="li"><div class="grow"><b>${esc(data.projects[pid].name)}</b> <span class="muted">· ${+data.projects[pid].floors||0} קומות</span>${pid===ui.pid?' <span class="pill s-approved">פתוח עכשיו</span>':""}</div>
+    <div class="list">${P.map(pid=>{const q=data.projects[pid]; return `<div class="li"><div class="grow"><b>${esc(q.name)}</b> <span class="muted">· ${PT(q).label} · ${unitCount(q)} ${PT(q).many}</span>${pid===ui.pid?' <span class="pill s-approved">פתוח עכשיו</span>':""}</div>
       ${pid===ui.pid?"":`<button class="btn ghost sm" data-act="openproj" data-id="${pid}">פתח</button>`}
-      ${P.length>1?`<button class="btn bad sm" data-act="delproj" data-id="${pid}">מחיקה</button>`:""}</div>`).join("")}</div>
+      ${P.length>1?`<button class="btn bad sm" data-act="delproj" data-id="${pid}">מחיקה</button>`:""}</div>`}).join("")}</div>
     <form class="form" data-form="addproj" style="margin-top:12px">
-      <label>שם פרויקט חדש<input id="np-name" required placeholder="למשל: בניין ברחוב הרצל 5"></label>
-      <label>מספר קומות<input id="np-floors" type="number" min="0" max="60" required value="5"></label>
+      <label>שם פרויקט חדש<input id="np-name" required placeholder="למשל: בית משפחת לוי, רחוב הרצל"></label>
+      <label>סוג פרויקט<select id="np-type">${typeOpts}</select></label>
+      <label id="np-count-l">${PTYPES.building.count}<input id="np-count" type="number" min="1" max="200" value="5"></label>
       <button class="btn">הוסף פרויקט</button></form>
-    <p class="note">פרויקט חדש מקבל את אותם מקצועות כמו הפרויקט הפתוח. השיבוצים וההתקדמות נפרדים לכל פרויקט.</p></div>
-    <div class="card"><h2>פרטי הבניין: ${esc(p.name)}</h2>
+    <p class="note" id="np-hint">פרויקט חדש מקבל את אותם מקצועות כמו הפרויקט הפתוח. השיבוצים וההתקדמות נפרדים לכל פרויקט.</p></div>
+    <div class="card"><h2>פרטי הפרויקט: ${esc(p.name)}</h2>
     <form class="form" data-form="project">
       <label>שם הפרויקט<input id="p-name" required value="${esc(p.name)}"></label>
-      <label>מספר קומות (מעל קרקע)<input id="p-floors" type="number" min="0" max="60" required value="${+p.floors||0}"></label>
-      <button class="btn">שמירה</button></form></div>
+      ${U?"":`<label>מספר קומות (מעל קרקע)<input id="p-floors" type="number" min="0" max="60" required value="${+p.floors||0}"></label>`}
+      <button class="btn">שמירה</button></form>
+    ${U?`<div style="margin-top:14px"><b>${PT(p).many} בפרויקט (${U.length})</b>
+      <div class="chips" style="margin-block:8px 12px">${U.map(u=>`<span class="chip">${esc(u.name)}<button data-act="delunit" data-id="${u.id}" aria-label="הסר ${esc(u.name)}">×</button></span>`).join("") || '<span class="muted">אין עדיין</span>'}</div>
+      <form class="form" data-form="addunit"><label>הוסף ${PT(p).one}<input id="u-unit" required placeholder="${ptype(p)==="street"?"למשל: בית 9":ptype(p)==="infra"?"למשל: קטע 7":"למשל: חדר כביסה"}"></label><button class="btn">הוסף</button></form></div>`:""}
+    </div>
     <div class="card"><h2>מקצועות</h2>
     <div class="chips" style="margin-bottom:12px">${trades().map(t=>`<span class="chip">${esc(t.label)}<button data-act="deltrade" data-k="${t.key}" aria-label="הסר ${esc(t.label)}">×</button></span>`).join("") || '<span class="muted">אין מקצועות</span>'}</div>
     <form class="form" data-form="addtrade"><label>מקצוע חדש<input id="t-label" required placeholder="למשל: גבס"></label><button class="btn">הוסף מקצוע</button></form></div>
     <div class="card"><h2>למי להודיע כשמאשרים</h2>
-    <p class="note" style="margin-top:-6px">סמן לכל מקצוע אילו מקצועות מקבלים SMS כשאתה מאשר אותו. ההודעה נשלחת לבעל המקצוע ששובץ לאותה קומה.</p>
+    <p class="note" style="margin-top:-6px">סמן לכל מקצוע אילו מקצועות מקבלים התראה כשאתה מאשר אותו. ההתראה נשלחת לבעל המקצוע ששובץ לאותו מקום.</p>
     ${trades().map(t=>`<div class="notify"><b>אחרי אישור ${esc(t.label)}, להודיע ל:</b>
       <div class="checks">${trades().filter(o=>o.key!==t.key).map(o=>`<label class="ck"><input type="checkbox" id="n-${t.key}-${o.key}" data-act="togglenotify" data-k="${t.key}" data-nk="${o.key}" ${(t.notify||[]).includes(o.key)?"checked":""}> ${esc(o.label)}</label>`).join("")}</div></div>`).join("")}
     </div>`;
@@ -456,20 +526,20 @@ function othersOnFloor(f,k){
     const people = ids.map(id=>{ const u=data.users[id]; return `${esc(u.name)}${u.phone?` · <a class="mono tel" href="tel:${esc(u.phone.replace(/[^\d+]/g,""))}">${esc(u.phone)}</a>`:""}`; }).join("<br>");
     return `<div class="orow"><div class="ot"><b>${esc(t.label)}</b> <span class="pill ${STATUS[s.status].c}">${STATUS[s.status].t}</span></div><div class="op">${people||'<span class="muted">לא שובץ</span>'}</div></div>`;
   }).filter(Boolean);
-  return rows.length ? `<details class="others"><summary>מי עוד עובד בקומה (${rows.length})</summary>${rows.join("")}</details>` : "";
+  return rows.length ? `<details class="others"><summary>מי עוד עובד ב${ptype()==="building"?"קומה":"מקום הזה"} (${rows.length})</summary>${rows.join("")}</details>` : "";
 }
 function workerView(u){
   const k = u.trade, label = tradeLabel(k);
   if(!trades().some(t=>t.key===k)) return `<div class="card"><p>המקצוע שלך עדיין לא מוגדר בפרויקט. פנה למנהל.</p></div>`;
   const F = floorsList().filter(f=>{ const a = assignee(f,k); return !a || a===ui.me; });
-  if(!F.length) return inboxView() + `<div class="card"><p>עדיין לא שובצת לאף קומה. המנהל ישבץ אותך.</p></div>`;
+  if(!F.length) return inboxView() + `<div class="card"><p>עדיין לא שובצת לעבודה בפרויקט הזה. המנהל ישבץ אותך.</p></div>`;
   const done = F.filter(f=>["done","approved"].includes(task(f,k).status)).length;
-  return inboxView() + `<div class="stats"><div class="stat"><b>${done}/${F.length}</b><span>קומות שסימנת (${esc(label)})</span><div class="bar"><i style="width:${F.length?done/F.length*100:0}%"></i></div></div></div>
+  return inboxView() + `<div class="stats"><div class="stat"><b>${done}/${F.length}</b><span>${PT().many} שסימנת (${esc(label)})</span><div class="bar"><i style="width:${F.length?done/F.length*100:0}%"></i></div></div></div>
   <div class="floors">${F.map(f=>{const s=task(f,k); const st=STATUS[s.status];
     let action = "";
     if(s.status==="pending"||s.status==="rejected") action = `<button class="btn" data-act="markdone" data-f="${f}" data-k="${k}">סיימתי</button>`;
     else if(s.status==="done") action = `<button class="btn ghost sm" data-act="undo" data-f="${f}" data-k="${k}">ביטול סימון</button>`;
-    return `<div class="floor"><div class="num">${f===0?"ק׳":f}</div>
+    return `<div class="floor">${unitsOf()?"":`<div class="num">${floorShort(f)}</div>`}
       <div class="info"><b>${floorName(f)}</b> <span class="pill ${st.c}">${st.t}</span>
       ${s.status==="rejected"&&s.reject?`<div class="note" style="color:var(--bad)">הערת מנהל: ${esc(s.reject)}</div>`:""}
       ${s.status==="approved"?`<div class="note">אושר ${fmt(s.approvedAt)}${s.praise?` · ${esc(s.praise)}`:""}</div>`:""}
@@ -495,7 +565,7 @@ function taskModal(f,k){
 }
 function doneModal(f,k){
   openModal(`<h3>${esc(tradeLabel(k))} · ${floorName(f)}</h3>
-    <p style="margin:0">לסמן שהעבודה בקומה הזו הסתיימה? המנהל יקבל אותה לאישור.</p>
+    <p style="margin:0">לסמן שהעבודה ב${esc(floorName(f))} הסתיימה? המנהל יקבל אותה לאישור.</p>
     <label>הערה (לא חובה)<textarea id="m-note" rows="2" placeholder="למשל: נשאר תיקון קטן בחדר מדרגות"></textarea></label>
     <div class="row"><button class="btn" data-act="confirmdone" data-f="${f}" data-k="${k}">כן, סיימתי</button>
     <button class="btn ghost" data-act="close">ביטול</button></div>`);
@@ -517,7 +587,7 @@ document.addEventListener("click", async e=>{
       await saveTask(f,k,{status:"done",doneBy:me().name,doneUser:ui.me,doneAt:Date.now(),note,reject:""},"סימן שסיים"+(note?` (${note})`:""));
       const text = `${me().name} (${tradeLabel(k)}) סיים את ${floorName(f)} ב${project().name}${note?`. הערה: ${note}`:""}. ממתין לאישור.`;
       await notify("managers", text);
-      smsModal(managerPhone(), "", text, "נשלח למנהל לאישור"); }
+      smsModal(managerPhone(), "מנהל", text, "נשלח למנהל לאישור"); }
     if(a==="undo") await saveTask(f,k,{status:"pending",doneBy:"",doneAt:null,note:""},"ביטל סימון");
     if(a==="approve"){ const r=(document.getElementById("m-reject")?.value||"").trim(); closeModal();
       const t = task(f,k); await saveTask(f,k,{status:"approved",approvedAt:Date.now(),approvedBy:me().name,praise:r},"אישר"+(r?` (${r})`:""));
@@ -526,7 +596,7 @@ document.addEventListener("click", async e=>{
       const next = ids.map(id=>({id,u:data.users[id]}));
       const nextText = `${project().name}: ${tradeLabel(k)} ב${floorName(f)} הסתיים ואושר. אפשר להתחיל לעבוד ב${floorName(f)}.`;
       for(const x of next) await notify(x.id, nextText);
-      await tellWorker(t, `${tradeLabel(k)} ב${floorName(f)} אושר. ${r || "עבודה יפה, כל הכבוד!"}`, "העבודה אושרה", groupBlock(next, nextText)); }
+      await tellWorker(t, `${tradeLabel(k)} ב${floorName(f)} אושר. ${r || "עבודה יפה, כל הכבוד!"}`, "העבודה אושרה", groupLink(next, nextText)); }
     if(a==="togglenotify"){ const p=project(), id=el.dataset.nk;
       const T = p.trades.map(t=>{ if(t.key!==k) return t; const n=new Set(t.notify||[]); el.checked?n.add(id):n.delete(id); return {...t, notify:[...n]}; });
       await put("projects",ui.pid,{...p,trades:T}); }
@@ -548,13 +618,35 @@ document.addEventListener("click", async e=>{
       const upd = {...u, name:g("e-name").value.trim()||u.name, phone:g("e-phone").value.trim()};
       if(g("e-trade")) upd.trade = g("e-trade").value;
       closeModal(); await put("users", id, upd); }
+    if(a==="hidenotice"){ const n=document.getElementById("notice"); if(n) n.hidden=true; }
+    if(a==="enablepush"){ el.disabled=true; el.textContent="רגע…";
+      const perm = await Notification.requestPermission();
+      if(perm==="granted"){ try{ await subscribePush(); showNotice('<div class="ntext"><b>✓ ההתראות פועלות</b><span>מעכשיו הודעות יקפצו בטלפון.</span></div>'); }catch(e){ showErr("לא הצלחנו להפעיל התראות. נסה שוב."); } }
+      else pushState="off";
+      render(); }
+    if(a==="testpush"){ el.disabled=true; el.textContent="שולח…";
+      const info = `מצב: ${standalone?"נפתח מהאייקון":"נפתח מדפדפן"} · הרשאה: ${"Notification" in window?Notification.permission:"אין"}`;
+      try{
+        const tp = () => fetch("/api/testpush",{method:"POST",headers:{"content-type":"application/json",authorization:"Bearer "+token},body:"{}"}).then(x=>x.json());
+        let r = await tp(), regErr = "";
+        if(!r.subs){ try{ await subscribePush(); r = await tp(); }catch(e){ regErr = String(e.message||e); } }
+        if(regErr){ showNotice(`<div class="ntext"><b>הרישום להתראות נכשל</b><span>${esc(regErr)} · ${esc(info)}</span></div><button class="nx" data-act="hidenotice">×</button>`); el.disabled=false; el.textContent="שלח לי התראת בדיקה"; return; }
+        if(r.ok) showNotice(`<div class="ntext"><b>✓ ההתראה נשלחה</b><span>אמורה לקפוץ תוך כמה שניות. נעל את המסך כדי לראות. ${esc(info)}</span></div><button class="nx" data-act="hidenotice">×</button>`);
+        else if(!r.subs) showNotice(`<div class="ntext"><b>הטלפון הזה לא רשום להתראות</b><span>לחץ "הפעל התראות" ואשר. ${esc(info)}</span></div><button class="nx" data-act="hidenotice">×</button>`);
+        else showNotice(`<div class="ntext"><b>השליחה נכשלה</b><span>${esc(JSON.stringify(r.results))} · ${esc(info)}</span></div><button class="nx" data-act="hidenotice">×</button>`);
+      }catch(e){ showErr("אין חיבור לשרת"); }
+      el.disabled=false; el.textContent="שלח לי התראת בדיקה"; }
+    if(a==="delunit"){ if(el.dataset.confirm!=="1"){ el.dataset.confirm="1"; el.textContent="בטוח?"; return; }
+      const p=project(), id=+el.dataset.id; await put("projects",ui.pid,{...p,units:(p.units||[]).filter(u=>u.id!==id)}); }
     if(a==="openproj"){ ui.pid=el.dataset.id; ls.set("siteboard-pid",ui.pid); ui.tab="board"; render(); }
     if(a==="delproj"){ if(el.dataset.confirm!=="1"){ el.dataset.confirm="1"; el.textContent="בטוח? כל ההתקדמות תימחק"; return; }
       await remove("projects", el.dataset.id); }
     if(a==="togglepw"){ ui.showPw = !ui.showPw; render(); }
     if(a==="resetpw"){ const id=el.dataset.id, pw=String(Math.floor(1000+Math.random()*9000)), u=data.users[id];
       await api("resetpw",{username:id,password:pw}); ui.showPw = true; render();
-      smsModal(u.phone||"", u.name, `הסיסמה החדשה שלך לאפליקציית ${project().name}: ${pw} (שם משתמש: ${id})`, "סיסמה חדשה נוצרה"); }
+      const t=`הסיסמה החדשה שלך: ${pw} (שם משתמש: ${id})`;
+      openModal(`<h3>סיסמה חדשה ל${esc(u.name)}</h3><div class="smsbox mono">${esc(pw)}</div>
+        <div class="row">${u.phone?`<a class="btn" href="${smsHref([u.phone], t)}">שלח לו ב-SMS</a>`:""}<button class="btn ghost" data-act="copy" data-text="${esc(t)}">העתק</button><button class="btn ghost" data-act="close">סגירה</button></div>`); }
     if(a==="copy"){ try{ await navigator.clipboard.writeText(el.dataset.text); el.textContent="הועתק"; }catch(_){ const b=document.querySelector(".smsbox"); if(b){const rg=document.createRange();rg.selectNodeContents(b);const sl=getSelection();sl.removeAllRanges();sl.addRange(rg);} } }
     if(a==="reset"){ closeModal(); await saveTask(f,k,{status:"pending",doneBy:"",doneAt:null,note:"",reject:""},"איפס"); }
     if(a==="deluser"){ if(el.dataset.confirm!=="1"){ el.dataset.confirm="1"; el.textContent="בטוח? לחץ שוב"; return; } await remove("users", el.dataset.id); }
@@ -584,7 +676,10 @@ document.addEventListener("submit", async e=>{
     if(form==="addproj"){
       const pid = "p" + Date.now().toString(36);
       const T = trades().map(t=>({key:t.key,label:t.label,notify:t.notify||[]}));
-      await put("projects", pid, {name:v("np-name"),floors:Math.max(0,Math.min(60,+v("np-floors")||0)),trades:T,nextTrade:project().nextTrade||T.length+1,assign:{},created:Date.now()});
+      const type = v("np-type"), n = +v("np-count")||0, base = {name:v("np-name"),type,trades:T,nextTrade:project().nextTrade||T.length+1,assign:{},created:Date.now()};
+      if(type==="building") base.floors = Math.max(0,Math.min(60,(n||6)-1));
+      else { base.units = makeUnits(type, n); base.nextUnit = base.units.length; }
+      await put("projects", pid, base);
       ui.pid = pid; ls.set("siteboard-pid",pid); ui.tab="settings"; render();
     }
     if(form==="broadcast"){
@@ -597,7 +692,13 @@ document.addEventListener("submit", async e=>{
         <div class="row"><button class="btn ghost" data-act="close">סגירה</button></div>`);
     }
     if(form==="project"){
-      await put("projects",ui.pid,{...project(),name:v("p-name"),floors:Math.max(0,Math.min(60,+v("p-floors")||0))});
+      const upd = {...project(),name:v("p-name")};
+      if(document.getElementById("p-floors")) upd.floors = Math.max(0,Math.min(60,+v("p-floors")||0));
+      await put("projects",ui.pid,upd);
+    }
+    if(form==="addunit"){
+      const p = project(), U = p.units||[], id = p.nextUnit ?? (U.reduce((m,u)=>Math.max(m,u.id),-1)+1);
+      await put("projects",ui.pid,{...p,units:[...U,{id,name:v("u-unit")}],nextUnit:id+1});
     }
     if(form==="addtrade"){
       const p = project(), n = p.nextTrade || (p.trades.length+1);
@@ -620,6 +721,10 @@ function toast(t){ const d=document.createElement("div"); d.className="toast"; d
 function logout(){ token=null; ls.set("siteboard-token",null); ui.me=null; ui.tab="board"; render(); }
 document.addEventListener("change", async e=>{
   const el = e.target;
+  if(el.id==="np-type"){ const t = PTYPES[el.value], l = document.getElementById("np-count-l"), c = document.getElementById("np-count"), h = document.getElementById("np-hint");
+    l.hidden = !t.count; if(t.count){ l.firstChild.textContent = t.count; c.value = t.def; }
+    h.textContent = t.units ? `ייווצרו ${t.many}: ${t.units.join(", ")}. אפשר לשנות אחרי היצירה.` : "פרויקט חדש מקבל את אותם מקצועות כמו הפרויקט הפתוח. השיבוצים וההתקדמות נפרדים לכל פרויקט.";
+    return; }
   if(el.id==="pick-project"){ ui.pid=el.value; ls.set("siteboard-pid",ui.pid); render(); return; }
   if(!el.matches(".assign-one,.assign-all")) return;
   const p = project(), A = {...(p.assign||{})}, k = el.dataset.k, v = el.value;
@@ -630,8 +735,12 @@ document.addEventListener("change", async e=>{
 });
 document.addEventListener("keydown", e=>{ if(e.key==="Escape") closeModal(); });
 
-refresh();
-if("serviceWorker" in navigator) navigator.serviceWorker.register("/sw.js").catch(()=>{});
+if("serviceWorker" in navigator){
+  navigator.serviceWorker.register("/sw.js").catch(()=>{});
+  navigator.serviceWorker.addEventListener("message", e=>{ if(e.data==="refresh") refresh(); });
+}
+refresh().then(()=>syncPush());
+document.addEventListener("visibilitychange", ()=>{ if(!document.hidden && token) refresh(); });
 </script>
 
 </body>
