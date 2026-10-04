@@ -135,6 +135,12 @@ textarea.need{border-color:var(--bad);outline:2px solid var(--bad)}
 .pick{width:auto;max-width:100%;padding:6px 10px;font-weight:700}
 .bform{display:grid;gap:8px}
 @media (min-width:640px){.bform{grid-template-columns:1fr auto;align-items:end}}
+.others{flex-basis:100%;border-top:1px solid var(--line);padding-top:8px;font-size:14px}
+.others summary{cursor:pointer;font-weight:700;color:var(--muted)}
+.orow{display:flex;flex-wrap:wrap;justify-content:space-between;gap:4px 12px;padding-block:8px;border-bottom:1px solid var(--line)}
+.orow:last-child{border-bottom:0}
+.op{text-align:start}
+a.tel{color:var(--ink)}
 .log{font-size:13px;color:var(--muted);display:grid;gap:2px;border-top:1px solid var(--line);padding-top:8px}
 @media (min-width:640px){.scrim{align-items:center}}
 @media (prefers-reduced-motion:no-preference){.cell,.btn{transition:filter .15s}.cell:hover,.btn:hover{filter:brightness(.95)}}
@@ -442,6 +448,16 @@ function settingsView(){
     </div>`;
 }
 
+/* מי עוד עובד בקומה: מקצוע, מצב, שם וטלפון */
+function othersOnFloor(f,k){
+  const rows = trades().filter(t=>t.key!==k).map(t=>{
+    const s = task(f,t.key), ids = responsible(f,t.key);
+    if(!ids.length && s.status==="pending") return "";
+    const people = ids.map(id=>{ const u=data.users[id]; return `${esc(u.name)}${u.phone?` · <a class="mono tel" href="tel:${esc(u.phone.replace(/[^\d+]/g,""))}">${esc(u.phone)}</a>`:""}`; }).join("<br>");
+    return `<div class="orow"><div class="ot"><b>${esc(t.label)}</b> <span class="pill ${STATUS[s.status].c}">${STATUS[s.status].t}</span></div><div class="op">${people||'<span class="muted">לא שובץ</span>'}</div></div>`;
+  }).filter(Boolean);
+  return rows.length ? `<details class="others"><summary>מי עוד עובד בקומה (${rows.length})</summary>${rows.join("")}</details>` : "";
+}
 function workerView(u){
   const k = u.trade, label = tradeLabel(k);
   if(!trades().some(t=>t.key===k)) return `<div class="card"><p>המקצוע שלך עדיין לא מוגדר בפרויקט. פנה למנהל.</p></div>`;
@@ -457,7 +473,7 @@ function workerView(u){
       <div class="info"><b>${floorName(f)}</b> <span class="pill ${st.c}">${st.t}</span>
       ${s.status==="rejected"&&s.reject?`<div class="note" style="color:var(--bad)">הערת מנהל: ${esc(s.reject)}</div>`:""}
       ${s.status==="approved"?`<div class="note">אושר ${fmt(s.approvedAt)}${s.praise?` · ${esc(s.praise)}`:""}</div>`:""}
-      ${s.status==="done"?`<div class="note">סומן ${fmt(s.doneAt)}</div>`:""}</div>${action}</div>`}).join("")}</div>`;
+      ${s.status==="done"?`<div class="note">סומן ${fmt(s.doneAt)}</div>`:""}</div>${action}${othersOnFloor(f,k)}</div>`}).join("")}</div>`;
 }
 
 /* ---------- modals ---------- */
