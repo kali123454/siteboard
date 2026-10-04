@@ -1,0 +1,15 @@
+[build]
+  publish = "public"
+
+[functions]
+  directory = "netlify/functions"
+
+[[redirects]]
+  from = "/manager"
+  to = "/index.html"
+  status = 200
+
+[[redirects]]
+  from = "/team"
+  to = "/index.html"
+  status = 200
