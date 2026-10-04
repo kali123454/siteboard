@@ -141,6 +141,12 @@ textarea.need{border-color:var(--bad);outline:2px solid var(--bad)}
 .orow:last-child{border-bottom:0}
 .op{text-align:start}
 a.tel{color:var(--ink)}
+#notice{position:fixed;inset-inline:12px;bottom:calc(12px + env(safe-area-inset-bottom,0px));z-index:30;background:var(--surface);border:1px solid var(--line);border-inline-start:5px solid var(--ok);border-radius:10px;box-shadow:0 6px 24px rgba(0,0,0,.18);padding:10px 12px;display:flex;flex-wrap:wrap;align-items:center;gap:8px 10px;max-width:560px;margin-inline:auto}
+#notice .ntext{flex:1 1 220px;min-width:0;display:grid}
+#notice .ntext span{font-size:14px;color:var(--muted)}
+#notice .nx{border:0;background:none;font-size:22px;line-height:1;color:var(--muted);padding:0 4px}
+.pushcard{display:flex;flex-wrap:wrap;align-items:center;gap:10px 14px;border-inline-start:5px solid var(--accent)}
+.pushcard .grow{flex:1 1 200px}
 .log{font-size:13px;color:var(--muted);display:grid;gap:2px;border-top:1px solid var(--line);padding-top:8px}
 @media (min-width:640px){.scrim{align-items:center}}
 @media (prefers-reduced-motion:no-preference){.cell,.btn{transition:filter .15s}.cell:hover,.btn:hover{filter:brightness(.95)}}
@@ -167,12 +173,12 @@ const ls = {get(k){try{return localStorage.getItem(k)}catch(e){return null}}, se
 
 /* ---------- שרת ---------- */
 const data = { users:{}, tasks:{}, projects:{}, messages:{} };
-let creds = {}, loaded = false, isSetup = false, projectName = "";
+let creds = {}, loaded = false, isSetup = false, projectName = "", vapidPublic = "";
 let token = ls.get("siteboard-token");
 
 function apply(st){
   if(!st) return;
-  isSetup = !!st.setup; projectName = st.projectName || "";
+  isSetup = !!st.setup; projectName = st.projectName || ""; vapidPublic = st.vapidPublic || vapidPublic;
   ui.me = st.me || null;
   data.users = st.users || {}; data.tasks = st.tasks || {}; data.messages = st.messages || {};
   data.projects = st.projects || {}; creds = st.creds || {};
@@ -189,7 +195,7 @@ async function api(path, body){
   const out = await res.json().catch(()=>({error:"אין חיבור לשרת. בדוק את האינטרנט ונסה שוב."}));
   if(res.status===401 && path!=="login"){ token=null; ls.set("siteboard-token",null); ui.me=null; }
   if(!res.ok) throw new Error(out.error || "השמירה נכשלה. נסה שוב.");
-  if(out.token){ token = out.token; ls.set("siteboard-token", token); }
+  if(out.token){ token = out.token; ls.set("siteboard-token", token); setTimeout(syncPush, 300); }
   apply(out.state || out);
   render();
   return out;
@@ -280,18 +286,48 @@ function groupBlock(list, text){
     ${withPhone.length?`<div class="row"><a class="btn" href="${smsHref(withPhone.map(x=>x.u.phone), text)}">שלח SMS לכולם (${withPhone.length})</a>
     <button class="btn ghost" data-act="copy" data-text="${esc(text)}">העתק טקסט</button></div>`:""}</div>`;
 }
+/* אחרי פעולה: הודעה קטנה שנעלמת לבד. ההתראה כבר נשלחה לטלפון; SMS רק אם רוצים */
 function smsModal(phone, name, text, title, extra=""){
-  const href = phone ? `sms:${phone.replace(/[^\d+]/g,"")}?&body=${encodeURIComponent(text)}` : "";
-  openModal(`<h3>${esc(title)}</h3>
-    <p style="margin:0">ההודעה נשמרה באפליקציה${name?` ו${esc(name)} יראה אותה כשייכנס`:""}. אפשר לשלוח גם SMS:</p>
-    <div class="smsbox">${esc(text)}</div>
-    ${phone?`<div>טלפון: <b class="mono" style="user-select:all">${esc(phone)}</b></div>
-      <div class="row"><a class="btn" href="${href}">פתח SMS בטלפון</a>
-      <button class="btn ghost" data-act="copy" data-text="${esc(text)}">העתק טקסט</button>
-      <button class="btn ghost" data-act="close">סגירה</button></div>
-      <p class="note" style="margin:0">הכפתור פותח את אפליקציית ההודעות בטלפון. אם לא נפתח, העתק את הטקסט ושלח ידנית.</p>`
-    :`<p class="muted" style="margin:0">לא הוגדר מספר טלפון${name?` ל${esc(name)}`:""}. אפשר להוסיף בלשונית עובדים.</p>
-      <div class="row"><button class="btn ghost" data-act="close">סגירה</button></div>`}${extra}`);
+  const sms = phone ? `<a class="btn ghost sm" href="${smsHref([phone], text)}">גם SMS</a>` : "";
+  showNotice(`<div class="ntext"><b>✓ ${esc(title)}</b><span>${name?`נשלחה התראה ל${esc(name)}`:"נשלחה התראה"}</span></div>${sms}${extra}<button class="nx" data-act="hidenotice" aria-label="סגירה">×</button>`);
+}
+function groupLink(list, text){
+  const ph = list.filter(x=>x.u.phone);
+  if(!list.length) return "";
+  return `<div class="ntext"><span>וגם ל-${list.length} בעלי מקצוע: ${list.map(x=>esc(x.u.name)).join(", ")}</span></div>${ph.length?`<a class="btn ghost sm" href="${smsHref(ph.map(x=>x.u.phone), text)}">גם SMS</a>`:""}`;
+}
+let noticeTimer;
+function showNotice(html){
+  let n = document.getElementById("notice");
+  if(!n){ n = document.createElement("div"); n.id="notice"; n.setAttribute("role","status"); document.body.appendChild(n); }
+  n.innerHTML = html; n.hidden = false;
+  clearTimeout(noticeTimer); noticeTimer = setTimeout(()=>{ n.hidden = true; }, 9000);
+}
+
+/* ---------- התראות לטלפון ---------- */
+const isIOS = /iphone|ipad|ipod/i.test(navigator.userAgent);
+const standalone = matchMedia("(display-mode: standalone)").matches || navigator.standalone === true;
+const pushSupported = "serviceWorker" in navigator && "PushManager" in window && "Notification" in window;
+let pushState = "unknown"; /* unknown | on | off */
+function b64ToBytes(b64){ const p="=".repeat((4-b64.length%4)%4); const raw=atob((b64+p).replace(/-/g,"+").replace(/_/g,"/")); return Uint8Array.from(raw,c=>c.charCodeAt(0)); }
+async function subscribePush(){
+  const reg = await navigator.serviceWorker.ready;
+  let sub = await reg.pushManager.getSubscription();
+  if(!sub) sub = await reg.pushManager.subscribe({userVisibleOnly:true, applicationServerKey:b64ToBytes(vapidPublic)});
+  await fetch("/api/subscribe",{method:"POST",headers:{"content-type":"application/json",authorization:"Bearer "+token},body:JSON.stringify({sub:sub.toJSON()})});
+  pushState = "on";
+}
+async function syncPush(){
+  if(!pushSupported || !vapidPublic || !token || !me()) return;
+  if(Notification.permission==="granted"){ try{ await subscribePush(); }catch(e){ pushState="off"; } render(); }
+  else { pushState="off"; render(); }
+}
+function pushCard(){
+  if(!me() || pushState==="on" || pushState==="unknown") return "";
+  if(isIOS && !standalone) return `<div class="card pushcard"><b>רוצה התראות לטלפון?</b><p class="note" style="margin:4px 0 0">באייפון צריך קודם להתקין: כפתור השיתוף ⬆️ ואז "הוסף למסך הבית", ולפתוח מהאייקון.</p></div>`;
+  if(!pushSupported || !vapidPublic) return "";
+  if(Notification.permission==="denied") return `<div class="card pushcard"><b>ההתראות חסומות</b><p class="note" style="margin:4px 0 0">כדי לקבל התראות, אפשר אותן בהגדרות הטלפון לאפליקציה הזו.</p></div>`;
+  return `<div class="card pushcard"><div class="grow"><b>קבל התראות לטלפון</b><p class="note" style="margin:2px 0 0">הודעות יקפצו לבד, גם כשהאפליקציה סגורה.</p></div><button class="btn" data-act="enablepush">הפעל התראות</button></div>`;
 }
 
 /* ---------- render ---------- */
@@ -309,7 +345,7 @@ function render(){
   const head = `<div class="top"><div class="ptitle"><h1>${esc(project().name)}</h1>${switcher}</div>
     <div class="who"><span class="role">${u.role==="manager"?"מנהל":esc(tradeLabel(u.trade))}</span><b>${esc(u.name)}</b>
     <button class="btn ghost sm" data-act="logout">יציאה</button></div></div>`;
-  app.innerHTML = demo + head + (u.role==="manager" ? managerView() : workerView(u));
+  app.innerHTML = demo + head + pushCard() + (u.role==="manager" ? managerView() : workerView(u));
 }
 
 function setupView(){
@@ -517,7 +553,7 @@ document.addEventListener("click", async e=>{
       await saveTask(f,k,{status:"done",doneBy:me().name,doneUser:ui.me,doneAt:Date.now(),note,reject:""},"סימן שסיים"+(note?` (${note})`:""));
       const text = `${me().name} (${tradeLabel(k)}) סיים את ${floorName(f)} ב${project().name}${note?`. הערה: ${note}`:""}. ממתין לאישור.`;
       await notify("managers", text);
-      smsModal(managerPhone(), "", text, "נשלח למנהל לאישור"); }
+      smsModal(managerPhone(), "מנהל", text, "נשלח למנהל לאישור"); }
     if(a==="undo") await saveTask(f,k,{status:"pending",doneBy:"",doneAt:null,note:""},"ביטל סימון");
     if(a==="approve"){ const r=(document.getElementById("m-reject")?.value||"").trim(); closeModal();
       const t = task(f,k); await saveTask(f,k,{status:"approved",approvedAt:Date.now(),approvedBy:me().name,praise:r},"אישר"+(r?` (${r})`:""));
@@ -526,7 +562,7 @@ document.addEventListener("click", async e=>{
       const next = ids.map(id=>({id,u:data.users[id]}));
       const nextText = `${project().name}: ${tradeLabel(k)} ב${floorName(f)} הסתיים ואושר. אפשר להתחיל לעבוד ב${floorName(f)}.`;
       for(const x of next) await notify(x.id, nextText);
-      await tellWorker(t, `${tradeLabel(k)} ב${floorName(f)} אושר. ${r || "עבודה יפה, כל הכבוד!"}`, "העבודה אושרה", groupBlock(next, nextText)); }
+      await tellWorker(t, `${tradeLabel(k)} ב${floorName(f)} אושר. ${r || "עבודה יפה, כל הכבוד!"}`, "העבודה אושרה", groupLink(next, nextText)); }
     if(a==="togglenotify"){ const p=project(), id=el.dataset.nk;
       const T = p.trades.map(t=>{ if(t.key!==k) return t; const n=new Set(t.notify||[]); el.checked?n.add(id):n.delete(id); return {...t, notify:[...n]}; });
       await put("projects",ui.pid,{...p,trades:T}); }
@@ -548,13 +584,21 @@ document.addEventListener("click", async e=>{
       const upd = {...u, name:g("e-name").value.trim()||u.name, phone:g("e-phone").value.trim()};
       if(g("e-trade")) upd.trade = g("e-trade").value;
       closeModal(); await put("users", id, upd); }
+    if(a==="hidenotice"){ const n=document.getElementById("notice"); if(n) n.hidden=true; }
+    if(a==="enablepush"){ el.disabled=true; el.textContent="רגע…";
+      const perm = await Notification.requestPermission();
+      if(perm==="granted"){ try{ await subscribePush(); showNotice('<div class="ntext"><b>✓ ההתראות פועלות</b><span>מעכשיו הודעות יקפצו בטלפון.</span></div>'); }catch(e){ showErr("לא הצלחנו להפעיל התראות. נסה שוב."); } }
+      else pushState="off";
+      render(); }
     if(a==="openproj"){ ui.pid=el.dataset.id; ls.set("siteboard-pid",ui.pid); ui.tab="board"; render(); }
     if(a==="delproj"){ if(el.dataset.confirm!=="1"){ el.dataset.confirm="1"; el.textContent="בטוח? כל ההתקדמות תימחק"; return; }
       await remove("projects", el.dataset.id); }
     if(a==="togglepw"){ ui.showPw = !ui.showPw; render(); }
     if(a==="resetpw"){ const id=el.dataset.id, pw=String(Math.floor(1000+Math.random()*9000)), u=data.users[id];
       await api("resetpw",{username:id,password:pw}); ui.showPw = true; render();
-      smsModal(u.phone||"", u.name, `הסיסמה החדשה שלך לאפליקציית ${project().name}: ${pw} (שם משתמש: ${id})`, "סיסמה חדשה נוצרה"); }
+      const t=`הסיסמה החדשה שלך: ${pw} (שם משתמש: ${id})`;
+      openModal(`<h3>סיסמה חדשה ל${esc(u.name)}</h3><div class="smsbox mono">${esc(pw)}</div>
+        <div class="row">${u.phone?`<a class="btn" href="${smsHref([u.phone], t)}">שלח לו ב-SMS</a>`:""}<button class="btn ghost" data-act="copy" data-text="${esc(t)}">העתק</button><button class="btn ghost" data-act="close">סגירה</button></div>`); }
     if(a==="copy"){ try{ await navigator.clipboard.writeText(el.dataset.text); el.textContent="הועתק"; }catch(_){ const b=document.querySelector(".smsbox"); if(b){const rg=document.createRange();rg.selectNodeContents(b);const sl=getSelection();sl.removeAllRanges();sl.addRange(rg);} } }
     if(a==="reset"){ closeModal(); await saveTask(f,k,{status:"pending",doneBy:"",doneAt:null,note:"",reject:""},"איפס"); }
     if(a==="deluser"){ if(el.dataset.confirm!=="1"){ el.dataset.confirm="1"; el.textContent="בטוח? לחץ שוב"; return; } await remove("users", el.dataset.id); }
@@ -630,8 +674,12 @@ document.addEventListener("change", async e=>{
 });
 document.addEventListener("keydown", e=>{ if(e.key==="Escape") closeModal(); });
 
-refresh();
-if("serviceWorker" in navigator) navigator.serviceWorker.register("/sw.js").catch(()=>{});
+if("serviceWorker" in navigator){
+  navigator.serviceWorker.register("/sw.js").catch(()=>{});
+  navigator.serviceWorker.addEventListener("message", e=>{ if(e.data==="refresh") refresh(); });
+}
+refresh().then(()=>syncPush());
+document.addEventListener("visibilitychange", ()=>{ if(!document.hidden && token) refresh(); });
 </script>
 
 </body>

@@ -1,5 +1,6 @@
 import { getStore } from "@netlify/blobs";
 import crypto from "node:crypto";
+import webpush from "web-push";
 
 /*
   API של לוח העבודות.
@@ -15,10 +16,47 @@ type State = {
   tasks: Record<string, any>;
   messages: Record<string, any>;
   creds: Record<string, string>;
+  subs: Record<string, any[]>;
 };
 
 const store = () => getStore({ name: "siteboard", consistency: "strong" });
-const empty = (): State => ({ projects: {}, users: {}, tasks: {}, messages: {}, creds: {} });
+const empty = (): State => ({ projects: {}, users: {}, tasks: {}, messages: {}, creds: {}, subs: {} });
+
+/* התראות שקופצות בטלפון (Web Push) */
+const env = (k: string) => (globalThis as any).Netlify?.env?.get(k) || process.env[k] || "";
+let pushReady = false;
+function initPush() {
+  if (pushReady) return true;
+  const pub = env("VAPID_PUBLIC"), priv = env("VAPID_PRIVATE");
+  if (!pub || !priv) return false;
+  webpush.setVapidDetails("mailto:" + (env("VAPID_EMAIL") || "admin@example.com"), pub, priv);
+  return (pushReady = true);
+}
+async function sendPushes(s: State, items: { to: string; text: string }[]) {
+  if (!items.length || !initPush()) return false;
+  let dirty = false;
+  const jobs: Promise<any>[] = [];
+  for (const it of items) {
+    const ids = it.to === "managers" ? Object.keys(s.users).filter((id) => s.users[id].role === "manager") : [it.to];
+    for (const id of ids) {
+      const u = s.users[id];
+      if (!u) continue;
+      const payload = JSON.stringify({ title: u.role === "manager" ? "קבלנים" : "עובדים", body: it.text, url: u.role === "manager" ? "/manager" : "/team" });
+      for (const sub of s.subs[id] || []) {
+        jobs.push(
+          webpush.sendNotification(sub, payload, { TTL: 60 * 60 * 24 }).catch((e: any) => {
+            if (e?.statusCode === 404 || e?.statusCode === 410) {
+              s.subs[id] = (s.subs[id] || []).filter((x) => x.endpoint !== sub.endpoint);
+              dirty = true;
+            } else console.error("push", e?.statusCode, e?.body);
+          })
+        );
+      }
+    }
+  }
+  await Promise.race([Promise.allSettled(jobs), new Promise((r) => setTimeout(r, 8000))]);
+  return dirty;
+}
 
 async function load(): Promise<State> {
   const raw = await store().get("state", { type: "json" });
@@ -91,7 +129,7 @@ function view(s: State, me: string | null) {
   for (const [id, u] of Object.entries(s.users)) {
     publicUsers[id] = { name: u.name, phone: u.phone || "", role: u.role, trade: u.trade || "" };
   }
-  const base = { setup: Object.keys(s.users).length === 0, projectName: "" };
+  const base = { setup: Object.keys(s.users).length === 0, projectName: "", vapidPublic: env("VAPID_PUBLIC") };
   const u = me ? s.users[me] : null;
   if (!u) return { ...base, me: null };
   const isMgr = u.role === "manager";
@@ -159,6 +197,17 @@ export default async (req: Request) => {
     const u = me ? s.users[me] : null;
     if (!me || !u) return fail("פג תוקף הכניסה. היכנס שוב.", 401);
     const isMgr = u.role === "manager";
+    const pushes: { to: string; text: string }[] = [];
+
+    if (route === "subscribe") {
+      const sub = body.sub;
+      if (!sub || typeof sub.endpoint !== "string" || !sub.keys) return fail("פעולה לא תקינה");
+      const list = (s.subs[me] || []).filter((x) => x.endpoint !== sub.endpoint);
+      list.push({ endpoint: sub.endpoint, keys: sub.keys });
+      s.subs[me] = list.slice(-5);
+      await save(s);
+      return json({ ok: true });
+    }
 
     if (route === "adduser" || route === "resetpw") {
       if (!isMgr) return fail("רק מנהל יכול לעשות את זה", 403);
@@ -201,6 +250,7 @@ export default async (req: Request) => {
           if (id === me) return fail("אי אפשר למחוק את עצמך");
           delete s.users[id];
           delete s.creds[id];
+          delete s.subs[id];
         } else {
           const cur = s.users[id];
           if (!cur || !obj) return fail("משתמש לא נמצא", 404);
@@ -239,12 +289,14 @@ export default async (req: Request) => {
         } else {
           if (!obj) return fail("פעולה לא תקינה");
           s.messages[id] = { to: String(obj.to || ""), text: String(obj.text || "").slice(0, 600), at: Date.now(), from: u.name, read: false };
+          pushes.push({ to: s.messages[id].to, text: s.messages[id].text });
           pruneMessages(s);
         }
       } else {
         return fail("פעולה לא תקינה");
       }
       await save(s);
+      if (await sendPushes(s, pushes)) await save(s);
       return json({ state: view(s, me) });
     }
 
