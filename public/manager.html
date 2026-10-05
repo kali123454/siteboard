@@ -8,8 +8,8 @@
 <link rel="icon" href="/icon-192.png">
 <link rel="apple-touch-icon" href="/icon-192.png">
 <meta name="apple-mobile-web-app-capable" content="yes">
-<meta name="apple-mobile-web-app-title" content="קבלנים">
-<title>קבלנים - לוח עבודות</title>
+<meta name="apple-mobile-web-app-title" content="מנהלי עבודה">
+<title>מנהלי עבודה - לוח עבודות</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Assistant:wght@400;600;700&family=IBM+Plex+Mono:wght@500;600&family=Secular+One&display=swap">
 <style>
@@ -150,6 +150,13 @@ a.tel{color:var(--ink)}
 .pushcard .grow{flex:1 1 200px}
 .pushcard.ok{border-inline-start-color:var(--ok);padding-block:10px}
 tbody th.uname{font-family:var(--f-body);font-weight:700;white-space:normal;text-align:start;min-width:90px}
+.copick{display:flex;align-items:center;gap:8px;flex-basis:100%;font-size:14px;color:var(--muted);font-weight:700}
+.copick select{width:auto;padding:4px 10px;font-weight:700;border-color:var(--accent)}
+table.ov td,table.ov th{text-align:start;white-space:nowrap}
+.minibar{display:inline-block;width:70px;height:8px;background:var(--idle-bg);border-radius:4px;overflow:hidden;vertical-align:middle;margin-inline-end:6px}.minibar i{display:block;height:100%;background:var(--ok)}
+.cometa{display:flex;flex-wrap:wrap;gap:6px 16px;margin-top:8px;font-size:14px;color:var(--muted)}.cometa .warn{color:var(--bad);font-weight:700}
+.cocard.off{opacity:.7}
+.cocard .chip{margin-inline-end:6px;padding:4px 12px}
 .log{font-size:13px;color:var(--muted);display:grid;gap:2px;border-top:1px solid var(--line);padding-top:8px}
 @media (min-width:640px){.scrim{align-items:center}}
 @media (prefers-reduced-motion:no-preference){.cell,.btn{transition:filter .15s}.cell:hover,.btn:hover{filter:brightness(.95)}}
@@ -194,20 +201,36 @@ const unitCount = p => { const U = unitsOf(p); return U ? U.length : (+p.floors|
 const ls = {get(k){try{return localStorage.getItem(k)}catch(e){return null}}, set(k,v){try{v==null?localStorage.removeItem(k):localStorage.setItem(k,v)}catch(e){}}};
 
 /* ---------- שרת ---------- */
-const data = { users:{}, tasks:{}, projects:{}, messages:{} };
+const data = { users:{}, tasks:{}, projects:{}, messages:{}, allUsers:{}, allProjects:{}, companies:{}, log:[] };
 let creds = {}, loaded = false, isSetup = false, projectName = "", vapidPublic = "";
 let token = ls.get("siteboard-token");
 
 function apply(st){
   if(!st) return;
   isSetup = !!st.setup; projectName = st.projectName || ""; vapidPublic = st.vapidPublic || vapidPublic;
+  if(st.suspended && !ui.err) ui.err = "החשבון של החברה מושהה. פנה למנהל המערכת.";
   ui.me = st.me || null;
-  data.users = st.users || {}; data.tasks = st.tasks || {}; data.messages = st.messages || {};
-  data.projects = st.projects || {}; creds = st.creds || {};
+  data.allUsers = st.users || {}; data.tasks = st.tasks || {}; data.messages = st.messages || {};
+  data.allProjects = st.projects || {}; creds = st.creds || {};
+  data.companies = st.companies || {}; data.log = st.log || [];
+  scopeToCompany();
   const vis = visibleProjects();
   if(!vis.includes(ui.pid)) ui.pid = vis[0] || "";
   loaded = true;
 }
+/* בעל האפליקציה רואה את כל החברות, ובוחר חברה אחת לעבוד עליה. השאר רואים רק את החברה שלהם */
+const isMgrRole = r => r==="manager" || r==="owner";
+const isOwner = () => (data.allUsers[ui.me]||{}).role==="owner";
+function scopeToCompany(){
+  const meU = data.allUsers[ui.me];
+  if(!meU || meU.role!=="owner"){ data.users = data.allUsers; data.projects = data.allProjects; return; }
+  const cids = Object.keys(data.companies).sort((a,b)=>(data.companies[a].created||0)-(data.companies[b].created||0));
+  if(!data.companies[ui.cid]) ui.cid = cids[0] || "";
+  data.users = Object.fromEntries(Object.entries(data.allUsers).filter(([id,u])=>id===ui.me || u.company===ui.cid));
+  data.projects = Object.fromEntries(Object.entries(data.allProjects).filter(([,p])=>p.company===ui.cid));
+}
+const coName = c => (data.companies[c]||{}).name || "";
+const myCompany = () => isOwner() ? ui.cid : ((data.allUsers[ui.me]||{}).company || "");
 async function api(path, body){
   const res = await fetch("/api/"+path, {
     method: body===undefined ? "GET" : "POST",
@@ -240,14 +263,15 @@ setInterval(()=>{
 
 /* ---------- app state ---------- */
 const PATH = location.pathname.replace(/\/+$/,"").split("/").pop() || (location.hash||"").slice(1);
-const PORTAL = PATH==="team" ? "team" : PATH==="manager" ? "manager" : "";
-const ui = { tab:"board", err:"", me: null, pid: ls.get("siteboard-pid") || "" };
+const PORTAL = PATH==="team" ? "team" : PATH==="manager" ? "manager" : PATH==="admin" ? "admin" : "";
+const PORTAL_ROLE = {team:"worker", manager:"manager", admin:"owner"};
+const ui = { tab: PATH==="admin" ? "overview" : "board", err:"", me: null, pid: ls.get("siteboard-pid") || "", cid: ls.get("siteboard-cid") || "" };
 const project = () => data.projects[ui.pid] || {name:projectName||"לוח עבודות באתר",floors:0,trades:[]};
 /* פרויקטים שהמשתמש רואה: מנהל — כולם; עובד — מה ששובץ אליו, או פרויקט שבו המקצוע שלו לא שובץ לאף אחד */
 function visibleProjects(){
   const ids = Object.keys(data.projects).sort((a,b)=>(data.projects[a].created||0)-(data.projects[b].created||0));
   const u = ui.me ? data.users[ui.me] : null;
-  if(!u || u.role==="manager") return ids;
+  if(!u || isMgrRole(u.role)) return ids;
   return ids.filter(pid=>{ const A = Object.entries(data.projects[pid].assign||{}).filter(([k])=>k.endsWith("_"+u.trade));
     return !A.length || A.some(([,v])=>v===ui.me); });
 }
@@ -283,7 +307,7 @@ function broadcastCard(){
 }
 const managerPhone = () => (Object.values(data.users).find(u=>u.role==="manager"&&u.phone)||{}).phone || "";
 const myMsgs = () => { const u = me(); if(!u) return [];
-  const key = u.role==="manager" ? "managers" : ui.me;
+  const key = isMgrRole(u.role) ? "mgr:"+myCompany() : ui.me;
   return Object.entries(data.messages).filter(([,m])=>m.to===key).sort((a,b)=>b[1].at-a[1].at); };
 
 function inboxView(){
@@ -363,16 +387,18 @@ function render(){
   if(!loaded) { app.innerHTML = '<p class="muted">טוען…</p>'; return; }
   const demo = "";
   const u = me();
-  if(isSetup && PORTAL!=="team") { app.innerHTML = setupView(); return; }
-  if(u && ((PORTAL==="team" && u.role==="manager") || (PORTAL==="manager" && u.role!=="manager"))){ logout(); return; }
+  if(isSetup && PORTAL==="admin") { app.innerHTML = setupView(); return; }
+  if(u && PORTAL && PORTAL_ROLE[PORTAL]!==u.role){ logout(); return; }
   if(!u){ app.innerHTML = loginView(); document.title = project().name; return; }
   const vis = visibleProjects();
   const switcher = vis.length>1 ? `<select id="pick-project" class="pick" aria-label="בחירת פרויקט">${vis.map(pid=>`<option value="${pid}" ${pid===ui.pid?"selected":""}>${esc(data.projects[pid].name)}</option>`).join("")}</select>` : "";
-  if(!vis.length && u.role!=="manager"){ app.innerHTML = `<div class="top"><h1>לוח עבודות</h1><button class="btn ghost sm" data-act="logout">יציאה</button></div><div class="card"><p>עדיין לא שובצת לאף פרויקט. המנהל ישבץ אותך.</p></div>`; return; }
-  const head = `<div class="top"><div class="ptitle"><h1>${esc(project().name)}</h1>${switcher}</div>
-    <div class="who"><span class="role">${u.role==="manager"?"מנהל":esc(tradeLabel(u.trade))}</span><b>${esc(u.name)}</b>
+  if(!vis.length && !isMgrRole(u.role)){ app.innerHTML = `<div class="top"><h1>לוח עבודות</h1><button class="btn ghost sm" data-act="logout">יציאה</button></div><div class="card"><p>עדיין לא שובצת לאף פרויקט. המנהל ישבץ אותך.</p></div>`; return; }
+  const cids = Object.keys(data.companies).sort((a,b)=>(data.companies[a].created||0)-(data.companies[b].created||0));
+  const coPick = u.role==="owner" ? `<div class="copick"><span>חברה</span><select id="pick-company" aria-label="בחירת חברה">${cids.map(c=>`<option value="${c}" ${c===ui.cid?"selected":""}>${esc(coName(c))}${data.companies[c].suspended?" (מושהית)":""}</option>`).join("")}</select></div>` : (u.role==="manager" && coName(myCompany()) ? `<div class="copick"><span>${esc(coName(myCompany()))}</span></div>` : "");
+  const head = `<div class="top"><div class="ptitle">${coPick}<h1>${Object.keys(data.projects).length?esc(project().name):esc(coName(myCompany())||"לוח עבודות")}</h1>${switcher}</div>
+    <div class="who"><span class="role">${u.role==="owner"?"בעל האפליקציה":u.role==="manager"?"מנהל עבודה":esc(tradeLabel(u.trade))}</span><b>${esc(u.name)}</b>
     <button class="btn ghost sm" data-act="logout">יציאה</button></div></div>`;
-  app.innerHTML = demo + head + pushCard() + (u.role==="manager" ? managerView() : workerView(u));
+  app.innerHTML = demo + head + pushCard() + (isMgrRole(u.role) ? managerView() : workerView(u));
 }
 
 function setupView(){
@@ -396,9 +422,9 @@ function loginView(){
     <button class="btn">כניסה</button>
     <p class="note" style="margin:0">את שם המשתמש והסיסמה מקבלים מהמנהל.</p></div></form>`;
   return `<form class="login" data-form="login"><div class="in">
-    <span class="role" style="justify-self:start">${PORTAL==="team"?"אפליקציית עובדים":PORTAL==="manager"?"אפליקציית קבלנים":"כניסה"}</span>
-    <h1>${esc(project().name)}</h1>
-    <p class="muted" style="margin:0">${PORTAL==="team"?"אינסטלטורים, חשמלאים, צבעים וכל בעלי המקצוע":PORTAL==="manager"?"קבלנים ומנהלים":"כניסה לעובדים ולמנהלים"}</p>
+    <span class="role" style="justify-self:start">${PORTAL==="admin"?"ניהול המערכת":PORTAL==="manager"?"אפליקציית מנהלי עבודה":"כניסה"}</span>
+    <h1>${PORTAL==="admin"?"לוח עבודות · ניהול":"כניסת מנהלי עבודה"}</h1>
+    <p class="muted" style="margin:0">${PORTAL==="admin"?"כניסה לבעל האפליקציה בלבד":"את שם המשתמש והסיסמה מקבלים ממנהל המערכת."}</p>
     <label>שם משתמש<input id="l-user" required autocomplete="username"></label>
     <label>סיסמה<input id="l-pass" type="password" required autocomplete="current-password"></label>
     <div class="err">${esc(ui.err)}</div>
@@ -407,13 +433,20 @@ function loginView(){
 
 function managerView(){
   const un = myMsgs().filter(([,m])=>!m.read).length;
-  const tabs = [["board","לוח בקרה"+(un?` (${un})`:"")],["workers","עובדים"],["assign","שיבוץ"],["settings","פרויקטים ומקצועות"]];
+  const own = isOwner();
+  const tabs = [...(own?[["overview","סקירה"],["companies","חברות"]]:[]),["board","לוח בקרה"+(un?` (${un})`:"")],["workers",own?"מנהלים ועובדים":"עובדים"],["assign","שיבוץ"],["settings","פרויקטים ומקצועות"],...(own?[["log","יומן פעילות"]]:[])];
+  if(!tabs.some(([k])=>k===ui.tab)) ui.tab = tabs[0][0];
   const nav = `<div class="tabs" role="tablist">${tabs.map(([k,t])=>`<button role="tab" aria-selected="${ui.tab===k}" data-tab="${k}">${t}</button>`).join("")}</div>`;
   let body = "";
   if(ui.tab==="board") body = boardView();
   if(ui.tab==="workers") body = workersView();
   if(ui.tab==="settings") body = settingsView();
   if(ui.tab==="assign") body = assignView();
+  if(ui.tab==="overview") body = overviewView();
+  if(ui.tab==="companies") body = companiesView();
+  if(ui.tab==="log") body = logView();
+  const noProj = !Object.keys(data.projects).length && ["board","assign"].includes(ui.tab);
+  if(noProj) body = `<div class="card"><h2>אין עדיין פרויקטים${isOwner()?" ב"+esc(coName(ui.cid)):""}</h2><p class="muted">צור פרויקט ראשון בלשונית "פרויקטים ומקצועות".</p><button class="btn" data-tab="settings">ליצירת פרויקט</button></div>`;
   return nav + body;
 }
 
@@ -438,11 +471,13 @@ function boardView(){
     ${F.map(f=>`<tr><th${unitsOf()?' class="uname"':""}>${floorShort(f)}</th>${T.map(t=>{const s=task(f,t.key);return `<td><button class="cell ${STATUS[s.status].c}" data-act="open" data-f="${f}" data-k="${t.key}" aria-label="${esc(t.label)} ${floorName(f)}: ${STATUS[s.status].t}">${STATUS[s.status].t}${assignee(f,t.key)?`<span class="who-s">${esc(data.users[assignee(f,t.key)].name)}</span>`:""}</button></td>`}).join("")}</tr>`).join("")}
   </tbody></table></div>
   <div class="legend">${Object.values(STATUS).map(s=>`<span class="${s.c}">${s.t}</span>`).join("")}</div>`;
-  return stats + broadcastCard() + queue + inboxView() + `<h2 style="font-size:20px;margin-bottom:10px">${ptype()==="building"?"חתך הבניין":"מצב העבודות לפי "+PT().many}</h2>` + grid;
+  const exp = `<div class="row" style="justify-content:flex-end;margin:-6px 0 12px"><button class="btn ghost sm" data-act="exportcsv">⬇ ייצוא לאקסל</button></div>`;
+  return exp + stats + broadcastCard() + queue + inboxView() + `<h2 style="font-size:20px;margin-bottom:10px">${ptype()==="building"?"חתך הבניין":"מצב העבודות לפי "+PT().many}</h2>` + grid;
 }
 
 function workersView(){
-  const U = Object.entries(data.users);
+  const own = isOwner();
+  const U = Object.entries(data.users).filter(([,u])=>u.role!=="owner").sort((a,b)=>(a[1].role==="manager"?0:1)-(b[1].role==="manager"?0:1));
   const opts = trades().map(t=>`<option value="${t.key}">${esc(t.label)}</option>`).join("");
   return `<div class="card"><h2>הוספת עובד (בעל מקצוע)</h2>
     <form class="form" data-form="adduser">
@@ -453,25 +488,117 @@ function workersView(){
       <label>מקצוע<select id="u-trade">${opts}</select></label>
       <button class="btn">הוסף</button>
     </form><div class="err">${esc(ui.err)}</div></div>
-    <div class="card"><h2>הוספת מנהל</h2>
-    <p class="note" style="margin-top:-6px">מנהל נכנס לאפליקציית הקבלנים, רואה הכל, מאשר עבודות ומוסיף קבלנים.</p>
+    ${own?`<div class="card" id="addmgr-card"><h2>הוספת מנהל עבודה · ${esc(coName(ui.cid))}</h2>
+    <p class="note" style="margin-top:-6px">מנהל עבודה נכנס לאפליקציית מנהלי העבודה ורואה רק את ${esc(coName(ui.cid))}: פרויקטים, עובדים, שיבוצים ואישורים. הוא לא יכול להוסיף מנהלי עבודה.</p>
     <form class="form" data-form="addmgr">
       <label>שם מלא<input id="g-name" required></label>
       <label>טלפון<input id="g-phone" type="tel" inputmode="tel" placeholder="050-0000000"></label>
       <label>שם משתמש<input id="g-user" required autocomplete="off"></label>
       <label>סיסמה<input id="g-pass" required minlength="4" autocomplete="off"></label>
-      <button class="btn">הוסף מנהל</button>
-    </form></div>
+      <button class="btn">הוסף מנהל עבודה</button>
+    </form></div>`:""}
     <div class="card"><div class="row" style="justify-content:space-between;align-items:center"><h2 style="margin:0">צוות ופרטי כניסה (${U.length})</h2>
     <button class="btn ghost sm" data-act="togglepw">${ui.showPw?"הסתר סיסמאות":"הצג סיסמאות"}</button></div>
-    <p class="note">רק מנהלים רואים את הסיסמאות. תשלח לכל אחד את שם המשתמש והסיסמה שלו.</p>
+    <p class="note">${own?"אתה רואה את כל הסיסמאות של החברה.":"אתה רואה את הסיסמאות של העובדים."} שלח לכל אחד את שם המשתמש והסיסמה שלו.</p>
     <div class="gridwrap"><table class="creds"><thead><tr><th>שם</th><th>תפקיד</th><th>טלפון</th><th>שם משתמש</th><th>סיסמה</th><th></th></tr></thead><tbody>
-    ${U.map(([id,u])=>`<tr><td><b>${esc(u.name)}</b></td><td>${u.role==="manager"?"מנהל":esc(tradeLabel(u.trade))}</td>
+    ${U.map(([id,u])=>`<tr><td><b>${esc(u.name)}</b></td><td>${u.role==="manager"?"<b>מנהל עבודה</b>":esc(tradeLabel(u.trade))}</td>
       <td class="mono">${u.phone?esc(u.phone):`<button class="btn sm" data-act="edituser" data-id="${esc(id)}">+ הוסף טלפון</button>`}</td><td class="mono" style="user-select:all">${esc(id)}</td>
       <td class="mono" style="user-select:all">${creds[id]!=null?(ui.showPw?esc(creds[id]):"••••••"):'<span class="muted">לא שמורה</span>'}</td>
-      <td><button class="btn ghost sm" data-act="edituser" data-id="${esc(id)}">עריכה</button> ${id===ui.me?'<span class="muted">זה אתה</span>':`<button class="btn ghost sm" data-act="resetpw" data-id="${esc(id)}">סיסמה חדשה</button> <button class="btn bad sm" data-act="deluser" data-id="${esc(id)}">הסרה</button>`}</td></tr>`).join("")}
+      <td>${(own || u.role==="worker" || id===ui.me) ? `<button class="btn ghost sm" data-act="edituser" data-id="${esc(id)}">עריכה</button> ${id===ui.me?'<span class="muted">זה אתה</span>':`<button class="btn ghost sm" data-act="resetpw" data-id="${esc(id)}">סיסמה חדשה</button> <button class="btn bad sm" data-act="deluser" data-id="${esc(id)}">הסרה</button>`}` : '<span class="muted">מנהל עבודה</span>'}</td></tr>`).join("")}
     </tbody></table></div></div>`;
 }
+/* ---------- מסכי בעל האפליקציה ---------- */
+function coStats(c){
+  const P = Object.entries(data.allProjects).filter(([,p])=>p.company===c);
+  const pids = new Set(P.map(([id])=>id));
+  const U = Object.values(data.allUsers).filter(u=>u.company===c);
+  let done=0, appr=0, rej=0, total=0, old=0;
+  for(const [pid,p] of P){ const nU = Array.isArray(p.units)?p.units.length:(+p.floors||0)+1; total += nU*(p.trades||[]).length; }
+  for(const [k,t] of Object.entries(data.tasks)){ if(!pids.has(k.split("__")[0])) continue;
+    if(t.status==="done"){ done++; if(t.doneAt && Date.now()-t.doneAt > 2*864e5) old++; } if(t.status==="approved") appr++; if(t.status==="rejected") rej++; }
+  const last = data.log.filter(l=>l.company===c).reduce((m,l)=>Math.max(m,l.at),0);
+  return {projects:P.length, managers:U.filter(u=>u.role==="manager").length, workers:U.filter(u=>u.role==="worker").length, done, appr, rej, old, pct: total?Math.round(appr/total*100):0, last};
+}
+const cidsSorted = () => Object.keys(data.companies).sort((a,b)=>(data.companies[a].created||0)-(data.companies[b].created||0));
+const daysTo = d => d ? Math.ceil((new Date(d+"T00:00:00") - new Date(new Date().toDateString()))/864e5) : null;
+function overviewView(){
+  const C = cidsSorted(), S = Object.fromEntries(C.map(c=>[c,coStats(c)]));
+  const sum = k => C.reduce((a,c)=>a+S[c][k],0);
+  const alerts = [];
+  for(const c of C){ const co=data.companies[c], st=S[c], dd=daysTo(co.payDate);
+    if(co.suspended) alerts.push(`<b>${esc(co.name)}</b> מושהית`);
+    if(dd!==null && dd<=7) alerts.push(`<b>${esc(co.name)}</b>: ${dd<0?`התשלום באיחור של ${-dd} ימים`:dd===0?"התשלום היום":`תשלום בעוד ${dd} ימים`}`);
+    if(st.old) alerts.push(`<b>${esc(co.name)}</b>: ${st.old} עבודות מחכות לאישור יותר מיומיים`);
+    if(!st.managers) alerts.push(`<b>${esc(co.name)}</b>: אין עדיין מנהל עבודה`); }
+  return `<div class="stats">
+    <div class="stat"><b>${C.length}</b><span>חברות</span></div>
+    <div class="stat"><b>${sum("projects")}</b><span>פרויקטים</span></div>
+    <div class="stat"><b>${sum("managers")}</b><span>מנהלי עבודה</span></div>
+    <div class="stat"><b>${sum("workers")}</b><span>עובדים</span></div>
+    <div class="stat"><b>${sum("done")}</b><span>ממתינים לאישור בכל החברות</span></div></div>
+    ${alerts.length?`<div class="queue"><h2>דורש תשומת לב</h2>${alerts.map(a=>`<div class="qrow"><div class="txt">${a}</div></div>`).join("")}</div>`:""}
+    <div class="card"><h2>חברות</h2><div class="gridwrap"><table class="ov"><thead><tr><th>חברה</th><th>פרויקטים</th><th>מנהלים</th><th>עובדים</th><th>ממתין</th><th>הוחזר</th><th>התקדמות</th><th>פעילות אחרונה</th><th></th></tr></thead><tbody>
+    ${C.map(c=>{const st=S[c],co=data.companies[c];return `<tr><td><b>${esc(co.name)}</b>${co.suspended?' <span class="pill s-rejected">מושהית</span>':""}</td><td>${st.projects}</td><td>${st.managers}</td><td>${st.workers}</td>
+      <td>${st.done?`<span class="pill s-done">${st.done}</span>`:0}</td><td>${st.rej?`<span class="pill s-rejected">${st.rej}</span>`:0}</td>
+      <td><div class="minibar"><i style="width:${st.pct}%"></i></div><span class="mono">${st.pct}%</span></td><td class="muted">${st.last?fmt(st.last):"—"}</td>
+      <td><button class="btn ghost sm" data-act="gocompany" data-id="${c}">פתח</button></td></tr>`}).join("")}
+    </tbody></table></div></div>
+    <div class="card"><h2>הודעה לכל מנהלי העבודה</h2>
+    <p class="note" style="margin-top:-6px">נשלחת כהתראה לכל מנהלי העבודה בכל החברות (${sum("managers")}).</p>
+    <form data-form="bcastmgr" class="bform"><textarea id="bm-text" rows="2" required placeholder="למשל: עדכון גרסה. מעכשיו אפשר לייצא דוח לאקסל"></textarea><button class="btn" ${sum("managers")?"":"disabled"}>שלח</button></form></div>`;
+}
+function companiesView(){
+  const C = cidsSorted();
+  return `<div class="card"><h2>הוספת חברה</h2>
+    <form class="form" data-form="addcompany">
+      <label>שם החברה<input id="nc-name" required placeholder="למשל: גיא ודורון, תדהר, אבני דרך"></label>
+      <label>איש קשר<input id="nc-contact" placeholder="שם"></label>
+      <label>טלפון<input id="nc-phone" type="tel" inputmode="tel" placeholder="050-0000000"></label>
+      <label>מסלול<input id="nc-plan" placeholder="למשל: חודשי 300 ₪"></label>
+      <label>תשלום הבא<input id="nc-pay" type="date"></label>
+      <button class="btn">הוסף חברה</button></form>
+    <p class="note">אחרי שמוסיפים חברה, מוסיפים לה מנהל עבודה. הוא יראה רק את הפרויקטים והעובדים של החברה שלו.</p></div>
+    ${C.map(c=>{const co=data.companies[c], st=coStats(c), dd=daysTo(co.payDate); const M=Object.entries(data.allUsers).filter(([,u])=>u.company===c&&u.role==="manager");
+    return `<div class="card cocard${co.suspended?" off":""}"><div class="row" style="justify-content:space-between;align-items:center"><h2 style="margin:0">${esc(co.name)} ${co.suspended?'<span class="pill s-rejected">מושהית</span>':'<span class="pill s-approved">פעילה</span>'}</h2>
+      <div class="row"><button class="btn sm" data-act="gocompany" data-id="${c}">פתח</button><button class="btn ghost sm" data-act="editcompany" data-id="${c}">עריכה</button></div></div>
+      <div class="cometa">${co.contact?`<span>👤 ${esc(co.contact)}</span>`:""}${co.phone?`<span class="mono">📞 ${esc(co.phone)}</span>`:""}${co.plan?`<span>💳 ${esc(co.plan)}</span>`:""}${co.payDate?`<span class="${dd!==null&&dd<=7?"warn":""}">📅 תשלום ${esc(co.payDate.split("-").reverse().join("/"))}${dd!==null&&dd<0?" (באיחור)":""}</span>`:""}</div>
+      ${co.notes?`<p class="note">${esc(co.notes)}</p>`:""}
+      <div class="cometa"><span>${st.projects} פרויקטים</span><span>${st.workers} עובדים</span><span>${st.pct}% הושלם</span></div>
+      <div style="margin-top:10px"><b>מנהלי עבודה:</b> ${M.length?M.map(([id,u])=>`<span class="chip">${esc(u.name)} <span class="mono muted">@${esc(id)}</span></span>`).join(" "):'<span class="muted">אין עדיין</span>'}
+      <button class="btn ghost sm" data-act="addmgrfor" data-id="${c}">+ מנהל עבודה</button></div></div>`}).join("")}`;
+}
+function logView(){
+  const f = ui.logf || "all";
+  const L = data.log.filter(l=>f==="all"||l.company===f).slice().reverse().slice(0,200);
+  return `<div class="card"><div class="row" style="justify-content:space-between;align-items:center"><h2 style="margin:0">יומן פעילות</h2>
+    <select id="log-filter" style="width:auto"><option value="all">כל החברות</option>${cidsSorted().map(c=>`<option value="${c}" ${c===f?"selected":""}>${esc(coName(c))}</option>`).join("")}</select></div>
+    <div class="list" style="margin-top:10px">${L.map(l=>`<div class="li"><div class="grow">${esc(l.text)}<div class="note">${esc(l.by)}${l.company?` · ${esc(coName(l.company))}`:""} · <span class="mono">${fmt(l.at)}</span></div></div></div>`).join("") || '<p class="muted">אין עדיין פעילות.</p>'}</div></div>`;
+}
+function companyModal(c){
+  const co = data.companies[c]||{};
+  openModal(`<h3>עריכת ${esc(co.name)}</h3>
+    <label>שם החברה<input id="ec-name" value="${esc(co.name)}"></label>
+    <label>איש קשר<input id="ec-contact" value="${esc(co.contact||"")}"></label>
+    <label>טלפון<input id="ec-phone" type="tel" value="${esc(co.phone||"")}"></label>
+    <label>מסלול<input id="ec-plan" value="${esc(co.plan||"")}"></label>
+    <label>תשלום הבא<input id="ec-pay" type="date" value="${esc(co.payDate||"")}"></label>
+    <label>הערות<textarea id="ec-notes" rows="2">${esc(co.notes||"")}</textarea></label>
+    <label class="ck"><input type="checkbox" id="ec-susp" ${co.suspended?"checked":""}> השהה את החברה (המנהלים והעובדים שלה לא יוכלו להיכנס)</label>
+    <div class="row"><button class="btn" data-act="savecompany" data-id="${c}">שמירה</button><button class="btn ghost" data-act="close">ביטול</button>
+    <button class="btn bad" data-act="delcompany" data-id="${c}" style="margin-inline-start:auto">מחיקת חברה</button></div>`);
+}
+function exportCSV(){
+  const p = project(), T = trades(), F = floorsList().slice().reverse();
+  const rows = [["פרויקט","חברה",PT().one,"מקצוע","מצב","משובץ","סומן ע\"י","תאריך סימון","תאריך אישור","הערת עובד","הערת מנהל"]];
+  const d = x => x ? new Date(x).toLocaleString("he-IL") : "";
+  for(const f of F) for(const t of T){ const s = task(f,t.key), a = assignee(f,t.key);
+    rows.push([p.name, coName(p.company), floorName(f), t.label, STATUS[s.status].t, a?data.users[a].name:"", s.doneBy||"", d(s.doneAt), d(s.approvedAt), s.note||"", s.reject||s.praise||""]); }
+  const csv = "\ufeff" + rows.map(r=>r.map(v=>`"${String(v).replace(/"/g,'""')}"`).join(",")).join("\r\n");
+  const url = URL.createObjectURL(new Blob([csv],{type:"text/csv;charset=utf-8"}));
+  const a = document.createElement("a"); a.href = url; a.download = `${p.name} - ${new Date().toLocaleDateString("he-IL").replace(/\./g,"-")}.csv`;
+  document.body.appendChild(a); a.click(); a.remove(); setTimeout(()=>URL.revokeObjectURL(url), 5000);
+}
+
 function assignView(){
   const T = trades(), F = floorsList();
   const W = k => Object.entries(data.users).filter(([,u])=>u.role==="worker"&&u.trade===k);
@@ -636,6 +763,16 @@ document.addEventListener("click", async e=>{
         else showNotice(`<div class="ntext"><b>השליחה נכשלה</b><span>${esc(JSON.stringify(r.results))} · ${esc(info)}</span></div><button class="nx" data-act="hidenotice">×</button>`);
       }catch(e){ showErr("אין חיבור לשרת"); }
       el.disabled=false; el.textContent="שלח לי התראת בדיקה"; }
+    if(a==="exportcsv") exportCSV();
+    if(a==="gocompany"){ ui.cid=el.dataset.id; ls.set("siteboard-cid",ui.cid); scopeToCompany(); ui.pid=visibleProjects()[0]||""; ui.tab="board"; render(); scrollTo(0,0); }
+    if(a==="addmgrfor"){ ui.cid=el.dataset.id; ls.set("siteboard-cid",ui.cid); scopeToCompany(); ui.pid=visibleProjects()[0]||""; ui.tab="workers"; render();
+      const c=document.getElementById("addmgr-card"); if(c){ c.scrollIntoView({block:"start"}); document.getElementById("g-name").focus(); } }
+    if(a==="editcompany") companyModal(el.dataset.id);
+    if(a==="savecompany"){ const id=el.dataset.id, g=x=>document.getElementById(x).value.trim();
+      const obj={...data.companies[id], name:g("ec-name"), contact:g("ec-contact"), phone:g("ec-phone"), plan:g("ec-plan"), payDate:g("ec-pay"), notes:g("ec-notes"), suspended:document.getElementById("ec-susp").checked};
+      closeModal(); await put("companies", id, obj); }
+    if(a==="delcompany"){ if(el.dataset.confirm!=="1"){ el.dataset.confirm="1"; el.textContent="בטוח? יימחקו כל הפרויקטים, המנהלים והעובדים שלה"; return; }
+      closeModal(); await remove("companies", el.dataset.id); ui.cid=""; scopeToCompany(); render(); }
     if(a==="delunit"){ if(el.dataset.confirm!=="1"){ el.dataset.confirm="1"; el.textContent="בטוח?"; return; }
       const p=project(), id=+el.dataset.id; await put("projects",ui.pid,{...p,units:(p.units||[]).filter(u=>u.id!==id)}); }
     if(a==="openproj"){ ui.pid=el.dataset.id; ls.set("siteboard-pid",ui.pid); ui.tab="board"; render(); }
@@ -666,17 +803,35 @@ document.addEventListener("submit", async e=>{
       await api("login",{username:v("l-user"),password:document.getElementById("l-pass").value,portal:PORTAL});
     }
     if(form==="adduser"){
-      await api("adduser",{name:v("u-name"),username:v("u-user"),password:v("u-pass"),phone:v("u-phone"),role:"worker",trade:v("u-trade")});
+      await api("adduser",{name:v("u-name"),username:v("u-user"),password:v("u-pass"),phone:v("u-phone"),role:"worker",trade:v("u-trade"),company:myCompany()});
       ui.err=""; render();
     }
     if(form==="addmgr"){
-      await api("adduser",{name:v("g-name"),username:v("g-user"),password:v("g-pass"),phone:v("g-phone"),role:"manager",trade:""});
+      const nm=v("g-name"), un=v("g-user"), pw=v("g-pass");
+      await api("adduser",{name:nm,username:un,password:pw,phone:v("g-phone"),role:"manager",trade:"",company:ui.cid});
+      const t=`שלום ${nm}, נפתח לך חשבון מנהל עבודה ב${coName(ui.cid)}.\nכניסה: ${location.origin}/manager\nשם משתמש: ${un.toLowerCase()}\nסיסמה: ${pw}`;
+      const ph=(Object.values(data.users).find(x=>x.name===nm)||{}).phone;
+      openModal(`<h3>מנהל העבודה נוסף ✓</h3><p style="margin:0">שלח לו את פרטי הכניסה:</p><div class="smsbox">${esc(t)}</div>
+        <div class="row">${ph?`<a class="btn" href="${smsHref([ph], t)}">שלח ב-SMS</a>`:""}<a class="btn ghost" href="https://wa.me/?text=${encodeURIComponent(t)}" target="_blank" rel="noopener">שלח ב-WhatsApp</a><button class="btn ghost" data-act="copy" data-text="${esc(t)}">העתק</button><button class="btn ghost" data-act="close">סגירה</button></div>`);
       ui.err=""; render();
+    }
+    if(form==="addcompany"){
+      const id = "c" + Date.now().toString(36);
+      await put("companies", id, {name:v("nc-name"),contact:v("nc-contact"),phone:v("nc-phone"),plan:v("nc-plan"),payDate:v("nc-pay"),notes:"",suspended:false});
+      ui.cid = id; ls.set("siteboard-cid",id); scopeToCompany(); render();
+      showNotice(`<div class="ntext"><b>✓ החברה נוספה</b><span>עכשיו הוסף לה מנהל עבודה.</span></div><button class="btn ghost sm" data-act="addmgrfor" data-id="${id}">+ מנהל עבודה</button><button class="nx" data-act="hidenotice">×</button>`);
+    }
+    if(form==="bcastmgr"){
+      const txt=v("bm-text"); if(!txt) return; const M=Object.entries(data.allUsers).filter(([,u])=>u.role==="manager");
+      for(const [id] of M) await notify(id, `הודעה ממנהל המערכת: ${txt}`);
+      document.getElementById("bm-text").value="";
+      showNotice(`<div class="ntext"><b>✓ נשלח ל-${M.length} מנהלי עבודה</b></div><button class="nx" data-act="hidenotice">×</button>`);
     }
     if(form==="addproj"){
       const pid = "p" + Date.now().toString(36);
       const T = trades().map(t=>({key:t.key,label:t.label,notify:t.notify||[]}));
-      const type = v("np-type"), n = +v("np-count")||0, base = {name:v("np-name"),type,trades:T,nextTrade:project().nextTrade||T.length+1,assign:{},created:Date.now()};
+      const TT = T.length ? T : ["טיח","אינסטלציה","חשמל","ריצוף","צבע"].map((l,i)=>({key:"t"+(i+1),label:l,notify:[]}));
+      const type = v("np-type"), n = +v("np-count")||0, base = {name:v("np-name"),type,company:myCompany(),trades:TT,nextTrade:Math.max(project().nextTrade||0,TT.length+1),assign:{},created:Date.now()};
       if(type==="building") base.floors = Math.max(0,Math.min(60,(n||6)-1));
       else { base.units = makeUnits(type, n); base.nextUnit = base.units.length; }
       await put("projects", pid, base);
@@ -725,6 +880,8 @@ document.addEventListener("change", async e=>{
     l.hidden = !t.count; if(t.count){ l.firstChild.textContent = t.count; c.value = t.def; }
     h.textContent = t.units ? `ייווצרו ${t.many}: ${t.units.join(", ")}. אפשר לשנות אחרי היצירה.` : "פרויקט חדש מקבל את אותם מקצועות כמו הפרויקט הפתוח. השיבוצים וההתקדמות נפרדים לכל פרויקט.";
     return; }
+  if(el.id==="pick-company"){ ui.cid=el.value; ls.set("siteboard-cid",ui.cid); scopeToCompany(); ui.pid=visibleProjects()[0]||""; render(); return; }
+  if(el.id==="log-filter"){ ui.logf=el.value; render(); return; }
   if(el.id==="pick-project"){ ui.pid=el.value; ls.set("siteboard-pid",ui.pid); render(); return; }
   if(!el.matches(".assign-one,.assign-all")) return;
   const p = project(), A = {...(p.assign||{})}, k = el.dataset.k, v = el.value;

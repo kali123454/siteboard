@@ -13,3 +13,8 @@
   from = "/team"
   to = "/team.html"
   status = 200
+
+[[redirects]]
+  from = "/admin"
+  to = "/admin.html"
+  status = 200

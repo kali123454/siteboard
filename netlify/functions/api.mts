@@ -8,7 +8,8 @@ import webpush from "web-push";
   סיסמאות נשמרות מוצפנות (scrypt). עותק גלוי נשמר בנפרד ונשלח רק למנהלים.
 */
 
-type User = { name: string; phone?: string; role: "manager" | "worker"; trade?: string; pass?: string; salt?: string };
+type Role = "owner" | "manager" | "worker";
+type User = { name: string; phone?: string; role: Role; trade?: string; company?: string; pass?: string; salt?: string; created?: number };
 type State = {
   project?: any | null;
   projects: Record<string, any>;
@@ -17,10 +18,13 @@ type State = {
   messages: Record<string, any>;
   creds: Record<string, string>;
   subs: Record<string, any[]>;
+  companies: Record<string, any>;
+  owner?: string;
+  log: any[];
 };
 
 const store = () => getStore({ name: "siteboard", consistency: "strong" });
-const empty = (): State => ({ projects: {}, users: {}, tasks: {}, messages: {}, creds: {}, subs: {} });
+const empty = (): State => ({ projects: {}, users: {}, tasks: {}, messages: {}, creds: {}, subs: {}, companies: {}, log: [] });
 
 /* התראות שקופצות בטלפון (Web Push) */
 const env = (k: string) => (globalThis as any).Netlify?.env?.get(k) || process.env[k] || "";
@@ -37,11 +41,11 @@ async function sendPushes(s: State, items: { to: string; text: string }[]) {
   let dirty = false;
   const jobs: Promise<any>[] = [];
   for (const it of items) {
-    const ids = it.to === "managers" ? Object.keys(s.users).filter((id) => s.users[id].role === "manager") : [it.to];
+    const ids = it.to.startsWith("mgr:") ? Object.keys(s.users).filter((id) => s.users[id].role === "manager" && s.users[id].company === it.to.slice(4)) : [it.to];
     for (const id of ids) {
       const u = s.users[id];
       if (!u) continue;
-      const payload = JSON.stringify({ title: u.role === "manager" ? "קבלנים" : "עובדים", body: it.text, url: u.role === "manager" ? "/manager" : "/team" });
+      const payload = JSON.stringify({ title: u.role === "worker" ? "עובדים" : "מנהלי עבודה", body: it.text, url: portalOf(u) });
       for (const sub of s.subs[id] || []) {
         jobs.push(
           webpush.sendNotification(sub, payload, { TTL: 60 * 60 * 24 }).catch((e: any) => {
@@ -69,7 +73,33 @@ async function load(): Promise<State> {
     s.tasks = T;
   }
   delete s.project;
+  /* מעבר למבנה חברות: המשתמש הראשון הוא בעל האפליקציה, וכל השאר עוברים לחברה הראשונה */
+  const ids = Object.keys(s.users);
+  if (ids.length && (!s.owner || !s.users[s.owner])) {
+    s.owner = ids.find((id) => s.users[id].role === "owner") || ids.find((id) => s.users[id].role === "manager") || ids[0];
+  }
+  if (s.owner && s.users[s.owner]) { s.users[s.owner].role = "owner"; delete s.users[s.owner].company; }
+  const needsCompany = Object.values(s.projects).some((p: any) => !p.company) || Object.entries(s.users).some(([id, x]) => id !== s.owner && !x.company);
+  if (needsCompany) {
+    if (!Object.keys(s.companies).length) s.companies.c1 = { name: "החברה הראשית", created: Date.now() };
+    const first = Object.keys(s.companies)[0];
+    for (const p of Object.values(s.projects) as any[]) if (!p.company) p.company = first;
+    for (const [id, x] of Object.entries(s.users)) if (id !== s.owner && !x.company) x.company = first;
+  }
+  for (const m of Object.values(s.messages) as any[]) if (m.to === "managers") m.to = "mgr:" + (Object.keys(s.companies)[0] || "c1");
+  if (!Array.isArray(s.log)) s.log = [];
   return s;
+}
+const portalOf = (u: User) => (u.role === "owner" ? "/admin" : u.role === "manager" ? "/manager" : "/team");
+const companyOfProject = (s: State, pid: string) => s.projects[pid]?.company || "";
+function unitName(p: any, loc: string) {
+  const f = Number((loc.match(/^f(\d+)_/) || [])[1]);
+  if (Array.isArray(p?.units)) return (p.units.find((x: any) => x.id === f) || {}).name || "";
+  return f === 0 ? "קרקע" : "קומה " + f;
+}
+function addLog(s: State, by: string, company: string, text: string) {
+  s.log.push({ at: Date.now(), by, company, text: text.slice(0, 200) });
+  if (s.log.length > 500) s.log.splice(0, s.log.length - 500);
 }
 async function save(s: State) {
   await store().setJSON("state", s);
@@ -123,29 +153,35 @@ const USER_RE = /^[a-z0-9_.-]{2,30}$/;
 const ID_RE = /^[A-Za-z0-9_.-]{1,80}$/;
 const DEFAULT_TRADES = ["טיח", "אינסטלציה", "חשמל", "ריצוף", "צבע"];
 
-/* מה כל משתמש רואה: מנהל — הכל; בעל מקצוע — בלי סיסמאות ורק ההודעות שלו */
+/* מה כל משתמש רואה:
+   בעל האפליקציה — הכל; מנהל עבודה — רק החברה שלו; עובד — החברה שלו, בלי סיסמאות, רק ההודעות שלו */
 function view(s: State, me: string | null) {
-  const publicUsers: Record<string, any> = {};
-  for (const [id, u] of Object.entries(s.users)) {
-    publicUsers[id] = { name: u.name, phone: u.phone || "", role: u.role, trade: u.trade || "" };
-  }
   const base = { setup: Object.keys(s.users).length === 0, projectName: "", vapidPublic: env("VAPID_PUBLIC") };
   const u = me ? s.users[me] : null;
   if (!u) return { ...base, me: null };
-  const isMgr = u.role === "manager";
+  if (u.role !== "owner" && s.companies[u.company || ""]?.suspended) return { ...base, me: null, suspended: true };
+  const owner = u.role === "owner", cid = u.company || "";
+  const inCo = (c?: string) => owner || c === cid;
+  const users: Record<string, any> = {};
+  for (const [id, x] of Object.entries(s.users)) {
+    if (x.role === "owner" && id !== me) continue;
+    if (x.role !== "owner" && !inCo(x.company)) continue;
+    users[id] = { name: x.name, phone: x.phone || "", role: x.role, trade: x.trade || "", company: x.company || "" };
+  }
+  const projects: Record<string, any> = {};
+  for (const [pid, p] of Object.entries(s.projects)) if (inCo(p.company)) projects[pid] = p;
+  const tasks: Record<string, any> = {};
+  for (const [k, t] of Object.entries(s.tasks)) if (projects[k.split("__")[0]]) tasks[k] = t;
   const messages: Record<string, any> = {};
   for (const [id, m] of Object.entries(s.messages)) {
-    if (isMgr ? m.to === "managers" : m.to === me) messages[id] = m;
+    const ok = owner ? (String(m.to).startsWith("mgr:") || m.to === me) : u.role === "manager" ? m.to === "mgr:" + cid || m.to === me : m.to === me;
+    if (ok) messages[id] = m;
   }
-  return {
-    ...base,
-    me,
-    projects: s.projects,
-    users: publicUsers,
-    tasks: s.tasks,
-    messages,
-    creds: isMgr ? s.creds : {},
-  };
+  const creds: Record<string, string> = {};
+  if (u.role !== "worker") for (const id of Object.keys(users)) if (s.creds[id] != null && (owner || users[id].role === "worker" || id === me)) creds[id] = s.creds[id];
+  const companies: Record<string, any> = {};
+  for (const [c, x] of Object.entries(s.companies)) if (inCo(c)) companies[c] = owner ? x : { name: x.name };
+  return { ...base, me, role: u.role, company: cid, companies, projects, users, tasks, messages, creds, log: owner ? s.log.slice(-200) : [] };
 }
 
 function pruneMessages(s: State) {
@@ -176,8 +212,10 @@ export default async (req: Request) => {
       if (!USER_RE.test(user)) return fail("שם משתמש: אותיות באנגלית, מספרים, נקודה או מקף");
       if (pw.length < 4) return fail("סיסמה של 4 תווים לפחות");
       const trades = DEFAULT_TRADES.map((label, i) => ({ key: "t" + (i + 1), label, notify: [] }));
-      s.projects = { p1: { name: String(body.project || "פרויקט חדש").slice(0, 80), floors: 5, trades, nextTrade: trades.length + 1, assign: {}, created: Date.now() } };
-      s.users[user] = { name: String(body.name || user).slice(0, 60), phone: String(body.phone || "").slice(0, 20), role: "manager", trade: "", ...hashPass(pw) };
+      s.companies = { c1: { name: "החברה הראשית", created: Date.now() } };
+      s.projects = { p1: { name: String(body.project || "פרויקט חדש").slice(0, 80), company: "c1", floors: 5, trades, nextTrade: trades.length + 1, assign: {}, created: Date.now() } };
+      s.users[user] = { name: String(body.name || user).slice(0, 60), phone: String(body.phone || "").slice(0, 20), role: "owner", trade: "", created: Date.now(), ...hashPass(pw) };
+      s.owner = user;
       s.creds[user] = pw;
       await save(s);
       return json({ token: await sign(user), state: view(s, user) });
@@ -187,8 +225,12 @@ export default async (req: Request) => {
       const user = String(body.username || "").trim().toLowerCase();
       const u = s.users[user];
       if (!u || !checkPass(String(body.password || ""), u)) return fail("שם משתמש או סיסמה שגויים", 401);
-      if (body.portal === "team" && u.role === "manager") return fail("זו אפליקציית העובדים. מנהלים נכנסים דרך אפליקציית הקבלנים.", 403);
-      if (body.portal === "manager" && u.role !== "manager") return fail("זו אפליקציית הקבלנים. עובדים נכנסים דרך אפליקציית העובדים.", 403);
+      const want = body.portal === "team" ? "worker" : body.portal === "manager" ? "manager" : body.portal === "admin" ? "owner" : "";
+      if (want && u.role !== want) {
+        const where = u.role === "owner" ? "haranam-app.netlify.app/admin" : u.role === "manager" ? "אפליקציית מנהלי העבודה" : "אפליקציית העובדים";
+        return fail(`המשתמש הזה לא שייך לאפליקציה הזו. היכנס דרך ${where}.`, 403);
+      }
+      if (u.role !== "owner" && s.companies[u.company || ""]?.suspended) return fail("החשבון של החברה מושהה. פנה למנהל המערכת.", 403);
       return json({ token: await sign(user), state: view(s, user) });
     }
 
@@ -196,7 +238,11 @@ export default async (req: Request) => {
     const me = await verify(token);
     const u = me ? s.users[me] : null;
     if (!me || !u) return fail("פג תוקף הכניסה. היכנס שוב.", 401);
-    const isMgr = u.role === "manager";
+    if (u.role !== "owner" && s.companies[u.company || ""]?.suspended) return fail("החשבון של החברה מושהה. פנה למנהל המערכת.", 401);
+    const owner = u.role === "owner";
+    const isMgr = u.role === "manager" || owner;
+    const myCo = u.company || "";
+    const canCo = (c?: string) => owner || (!!c && c === myCo);
     const pushes: { to: string; text: string }[] = [];
 
     if (route === "subscribe") {
@@ -216,7 +262,7 @@ export default async (req: Request) => {
       const results: any[] = [];
       for (const sub of subs) {
         try {
-          const r: any = await webpush.sendNotification(sub, JSON.stringify({ title: "בדיקה", body: "ההתראות עובדות ✓", url: isMgr ? "/manager" : "/team" }), { TTL: 600 });
+          const r: any = await webpush.sendNotification(sub, JSON.stringify({ title: "בדיקה", body: "ההתראות עובדות ✓", url: portalOf(u) }), { TTL: 600 });
           results.push({ ok: true, status: r?.statusCode, host: new URL(sub.endpoint).host });
         } catch (e: any) {
           results.push({ ok: false, status: e?.statusCode, host: new URL(sub.endpoint).host, body: String(e?.body || e?.message || "").slice(0, 200) });
@@ -235,11 +281,19 @@ export default async (req: Request) => {
       if (route === "adduser") {
         if (!USER_RE.test(id)) return fail("שם משתמש: אותיות באנגלית, מספרים, נקודה או מקף");
         if (s.users[id]) return fail("שם המשתמש הזה כבר תפוס");
-        const role = body.role === "manager" ? "manager" : "worker";
-        s.users[id] = { name: String(body.name || id).slice(0, 60), phone: String(body.phone || "").slice(0, 20), role, trade: role === "worker" ? String(body.trade || "") : "", ...hashPass(pw) };
+        const role: Role = body.role === "manager" ? "manager" : "worker";
+        if (role === "manager" && !owner) return fail("רק בעל האפליקציה יכול להוסיף מנהלי עבודה", 403);
+        const company = owner ? String(body.company || "") : myCo;
+        if (!s.companies[company]) return fail("בחר חברה");
+        s.users[id] = { name: String(body.name || id).slice(0, 60), phone: String(body.phone || "").slice(0, 20), role, company, trade: role === "worker" ? String(body.trade || "") : "", created: Date.now(), ...hashPass(pw) };
+        addLog(s, u.name, company, `${role === "manager" ? "מנהל עבודה" : "עובד"} חדש: ${s.users[id].name}`);
       } else {
-        if (!s.users[id]) return fail("משתמש לא נמצא", 404);
-        Object.assign(s.users[id], hashPass(pw));
+        const t = s.users[id];
+        if (!t) return fail("משתמש לא נמצא", 404);
+        if (t.role === "owner" && id !== me) return fail("פעולה לא תקינה", 403);
+        if (!owner && (t.company !== myCo || (t.role !== "worker" && id !== me))) return fail("אין לך הרשאה למשתמש הזה", 403);
+        Object.assign(t, hashPass(pw));
+        addLog(s, u.name, t.company || "", `סיסמה חדשה ל${t.name}`);
       }
       s.creds[id] = pw;
       await save(s);
@@ -253,25 +307,55 @@ export default async (req: Request) => {
       const obj = body.obj && typeof body.obj === "object" ? body.obj : null;
       if (!ID_RE.test(id)) return fail("מזהה לא תקין");
 
-      if (col === "projects") {
-        if (!isMgr) return fail("רק מנהל יכול לשנות הגדרות", 403);
+      if (col === "companies") {
+        if (!owner) return fail("רק בעל האפליקציה מנהל חברות", 403);
         if (route === "remove") {
+          const name = s.companies[id]?.name || id;
+          for (const [pid, p] of Object.entries(s.projects)) if (p.company === id) {
+            delete s.projects[pid];
+            for (const k of Object.keys(s.tasks)) if (k.startsWith(pid + "__")) delete s.tasks[k];
+          }
+          for (const [uid, x] of Object.entries(s.users)) if (x.company === id && uid !== s.owner) { delete s.users[uid]; delete s.creds[uid]; delete s.subs[uid]; }
+          delete s.companies[id];
+          addLog(s, u.name, "", `החברה ${name} נמחקה`);
+        } else {
+          if (!obj || !String(obj.name || "").trim()) return fail("צריך שם חברה");
+          const isNew = !s.companies[id];
+          const prev = s.companies[id] || { created: Date.now() };
+          s.companies[id] = { ...prev, name: String(obj.name).slice(0, 60), contact: String(obj.contact || "").slice(0, 60), phone: String(obj.phone || "").slice(0, 20), notes: String(obj.notes || "").slice(0, 500), plan: String(obj.plan || "").slice(0, 40), payDate: String(obj.payDate || "").slice(0, 10), suspended: !!obj.suspended };
+          if (isNew) addLog(s, u.name, id, `חברה חדשה: ${s.companies[id].name}`);
+          else if (!!prev.suspended !== !!obj.suspended) addLog(s, u.name, id, obj.suspended ? "החברה הושהתה" : "החברה הופעלה מחדש");
+        }
+      } else if (col === "projects") {
+        if (!isMgr) return fail("רק מנהל יכול לשנות הגדרות", 403);
+        const cur = s.projects[id];
+        if (cur && !canCo(cur.company)) return fail("אין לך הרשאה לפרויקט הזה", 403);
+        if (route === "remove") {
+          if (!cur) return fail("הפרויקט לא נמצא", 404);
           delete s.projects[id];
           for (const k of Object.keys(s.tasks)) if (k.startsWith(id + "__")) delete s.tasks[k];
+          addLog(s, u.name, cur.company, `פרויקט נמחק: ${cur.name}`);
         } else {
           if (!obj) return fail("פעולה לא תקינה");
-          s.projects[id] = obj;
+          const company = cur ? cur.company : owner ? String(obj.company || "") : myCo;
+          if (!s.companies[company]) return fail("בחר חברה");
+          s.projects[id] = { ...obj, company };
+          if (!cur) addLog(s, u.name, company, `פרויקט חדש: ${obj.name}`);
         }
       } else if (col === "users") {
         if (!isMgr) return fail("רק מנהל יכול לשנות עובדים", 403);
+        const cur = s.users[id];
+        if (!cur) return fail("משתמש לא נמצא", 404);
+        if (!owner && (cur.company !== myCo || (cur.role !== "worker" && id !== me))) return fail("אין לך הרשאה למשתמש הזה", 403);
+        if (cur.role === "owner" && id !== me) return fail("פעולה לא תקינה", 403);
         if (route === "remove") {
           if (id === me) return fail("אי אפשר למחוק את עצמך");
           delete s.users[id];
           delete s.creds[id];
           delete s.subs[id];
+          addLog(s, u.name, cur.company || "", `${cur.role === "manager" ? "מנהל עבודה" : "עובד"} הוסר: ${cur.name}`);
         } else {
-          const cur = s.users[id];
-          if (!cur || !obj) return fail("משתמש לא נמצא", 404);
+          if (!obj) return fail("משתמש לא נמצא", 404);
           s.users[id] = {
             ...cur,
             name: String(obj.name || cur.name).slice(0, 60),
@@ -293,7 +377,17 @@ export default async (req: Request) => {
           if (cur.status === "approved") return fail("העבודה כבר אושרה", 403);
           if (obj.status === "pending" && cur.status !== "done") return fail("פעולה לא תקינה", 403);
         }
+        const [pid0, loc0] = id.split("__");
+        const pco = companyOfProject(s, pid0);
+        if (!s.projects[pid0]) return fail("הפרויקט לא נמצא", 404);
+        if (!canCo(pco)) return fail("אין לך הרשאה לפרויקט הזה", 403);
+        const before = s.tasks[id]?.status || "pending";
         s.tasks[id] = obj;
+        if (before !== obj.status) {
+          const tr = (s.projects[pid0].trades || []).find((x: any) => x.key === obj.trade)?.label || "";
+          const word: any = { done: "סימן סיום", approved: "אישר", rejected: "החזיר לתיקון", pending: "איפס" };
+          addLog(s, u.name, pco, `${word[obj.status] || obj.status}: ${tr} · ${unitName(s.projects[pid0], loc0)} · ${s.projects[pid0].name}`);
+        }
       } else if (col === "messages") {
         const cur = s.messages[id];
         if (route === "remove") {
@@ -301,12 +395,20 @@ export default async (req: Request) => {
           delete s.messages[id];
         } else if (cur) {
           /* עדכון הודעה קיימת = סימון כנקרא, רק לנמען */
-          const mine = isMgr ? cur.to === "managers" : cur.to === me;
+          const mine = cur.to === me || (owner && String(cur.to).startsWith("mgr:")) || (u.role === "manager" && cur.to === "mgr:" + myCo);
           if (!mine) return fail("פעולה לא תקינה", 403);
           cur.read = !!obj?.read;
         } else {
           if (!obj) return fail("פעולה לא תקינה");
-          s.messages[id] = { to: String(obj.to || ""), text: String(obj.text || "").slice(0, 600), at: Date.now(), from: u.name, read: false };
+          let to = String(obj.to || "");
+          if (to === "managers") to = "mgr:" + myCo;
+          if (!to.startsWith("mgr:")) {
+            const tu = s.users[to];
+            if (!tu) return fail("הנמען לא נמצא", 404);
+            if (!owner && tu.company !== myCo) return fail("אין לך הרשאה לשלוח למשתמש הזה", 403);
+            if (u.role === "worker") return fail("פעולה לא תקינה", 403);
+          } else if (!owner && to !== "mgr:" + myCo) return fail("פעולה לא תקינה", 403);
+          s.messages[id] = { to, text: String(obj.text || "").slice(0, 600), at: Date.now(), from: u.name, read: false };
           pushes.push({ to: s.messages[id].to, text: s.messages[id].text });
           pruneMessages(s);
         }
