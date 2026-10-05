@@ -356,19 +356,36 @@ const standalone = matchMedia("(display-mode: standalone)").matches || navigator
 const pushSupported = "serviceWorker" in navigator && "PushManager" in window && "Notification" in window;
 let pushState = "unknown"; /* unknown | on | off */
 function b64ToBytes(b64){ const p="=".repeat((4-b64.length%4)%4); const raw=atob((b64+p).replace(/-/g,"+").replace(/_/g,"/")); return Uint8Array.from(raw,c=>c.charCodeAt(0)); }
-async function subscribePush(){
-  const reg = await navigator.serviceWorker.ready;
-  let sub = await reg.pushManager.getSubscription();
-  if(!sub) sub = await reg.pushManager.subscribe({userVisibleOnly:true, applicationServerKey:b64ToBytes(vapidPublic)});
+let pushErr = "";
+async function sendSub(sub){
   const j = sub.toJSON();
   const res = await fetch("/api/subscribe",{method:"POST",headers:{"content-type":"application/json",authorization:"Bearer "+token},body:JSON.stringify({sub:{endpoint:j.endpoint||sub.endpoint,keys:j.keys}})});
-  if(!res.ok){ const t = await res.text().catch(()=> ""); throw new Error("subscribe "+res.status+" "+t.slice(0,120)); }
-  pushState = "on";
+  if(!res.ok){ const t = await res.text().catch(()=> ""); throw new Error("שמירה בשרת נכשלה "+res.status+" "+t.slice(0,80)); }
+}
+function pushDiag(){ return `${isIOS?"אייפון":"אנדרואיד/מחשב"} · ${standalone?"נפתח מהאייקון":"נפתח מדפדפן"} · הרשאה: ${"Notification" in window?Notification.permission:"אין"} · Push: ${("PushManager" in window)?"נתמך":"לא נתמך"}${pushErr?" · שגיאה: "+pushErr:""}`; }
+async function subscribePush(){
+  if(!vapidPublic) throw new Error("אין מפתח התראות בשרת");
+  const reg = await navigator.serviceWorker.ready;
+  const key = b64ToBytes(vapidPublic);
+  let sub = await reg.pushManager.getSubscription();
+  if(sub){
+    /* רישום ישן עם מפתח אחר — מבטלים ונרשמים מחדש */
+    const k = sub.options && sub.options.applicationServerKey ? new Uint8Array(sub.options.applicationServerKey) : null;
+    if(k && (k.length!==key.length || k.some((v,i)=>v!==key[i]))){ await sub.unsubscribe(); sub = null; }
+  }
+  if(!sub) sub = await reg.pushManager.subscribe({userVisibleOnly:true, applicationServerKey:key});
+  await sendSub(sub);
+  pushState = "on"; pushErr = "";
 }
 async function syncPush(){
   if(!pushSupported || !vapidPublic || !token || !me()) return;
-  if(Notification.permission==="granted"){ try{ await subscribePush(); }catch(e){ pushState="off"; } render(); }
-  else { pushState="off"; render(); }
+  /* בלי לחיצה אי אפשר להירשם (אייפון חוסם), אז כאן רק מחדשים רישום קיים */
+  try{
+    const reg = await navigator.serviceWorker.ready;
+    const sub = await reg.pushManager.getSubscription();
+    if(sub && Notification.permission==="granted"){ await sendSub(sub); pushState="on"; } else pushState="off";
+  }catch(e){ pushState="off"; pushErr=String(e.message||e); }
+  render();
 }
 function pushCard(){
   if(!me()) return "";
@@ -377,8 +394,8 @@ function pushCard(){
   if(pushState==="unknown") return "";
   if(isIOS && !standalone) return `<div class="card pushcard"><b>רוצה התראות לטלפון?</b><p class="note" style="margin:4px 0 0">באייפון צריך קודם להתקין: כפתור השיתוף ⬆️ ואז "הוסף למסך הבית", ולפתוח מהאייקון.</p></div>`;
   if(!pushSupported || !vapidPublic) return "";
-  if(Notification.permission==="denied") return `<div class="card pushcard"><b>ההתראות חסומות</b><p class="note" style="margin:4px 0 0">כדי לקבל התראות, אפשר אותן בהגדרות הטלפון לאפליקציה הזו.</p></div>`;
-  return `<div class="card pushcard"><div class="grow"><b>קבל התראות לטלפון</b><p class="note" style="margin:2px 0 0">הודעות יקפצו לבד, גם כשהאפליקציה סגורה.</p></div><button class="btn" data-act="enablepush">הפעל התראות</button></div>`;
+  if(Notification.permission==="denied") return `<div class="card pushcard"><b>ההתראות חסומות</b><p class="note" style="margin:4px 0 0">באייפון: הגדרות ← עדכונים ← ${esc(document.title.split(" -")[0])} ← אפשר עדכונים. באנדרואיד: לחיצה ארוכה על האייקון ← פרטי אפליקציה ← התראות.</p><p class="note mono" style="margin:4px 0 0">${esc(pushDiag())}</p></div>`;
+  return `<div class="card pushcard"><div class="grow"><b>קבל התראות לטלפון</b><p class="note" style="margin:2px 0 0">הודעות יקפצו לבד, גם כשהאפליקציה סגורה.</p>${pushErr?`<p class="note mono" style="margin:4px 0 0;color:var(--bad)">${esc(pushDiag())}</p>`:""}</div><button class="btn" data-act="enablepush">הפעל התראות</button></div>`;
 }
 
 /* ---------- render ---------- */
@@ -504,7 +521,7 @@ function workersView(){
     ${U.map(([id,u])=>`<tr><td><b>${esc(u.name)}</b></td><td>${u.role==="manager"?"<b>מנהל עבודה</b>":esc(tradeLabel(u.trade))}</td>
       <td class="mono">${u.phone?esc(u.phone):`<button class="btn sm" data-act="edituser" data-id="${esc(id)}">+ הוסף טלפון</button>`}</td><td class="mono" style="user-select:all">${esc(id)}</td>
       <td class="mono" style="user-select:all">${creds[id]!=null?(ui.showPw?esc(creds[id]):"••••••"):'<span class="muted">לא שמורה</span>'}</td>
-      <td>${(own || u.role==="worker" || id===ui.me) ? `<button class="btn ghost sm" data-act="edituser" data-id="${esc(id)}">עריכה</button> ${id===ui.me?'<span class="muted">זה אתה</span>':`<button class="btn ghost sm" data-act="resetpw" data-id="${esc(id)}">סיסמה חדשה</button> <button class="btn bad sm" data-act="deluser" data-id="${esc(id)}">הסרה</button>`}` : '<span class="muted">מנהל עבודה</span>'}</td></tr>`).join("")}
+      <td>${(own || u.role==="worker" || id===ui.me) ? `<button class="btn ghost sm" data-act="edituser" data-id="${esc(id)}">עריכה</button> ${id===ui.me?'<span class="muted">זה אתה</span>':`${u.role==="worker"?`<button class="btn sm" data-act="welcome" data-id="${esc(id)}">📩 שלח פרטי כניסה</button> `:""}<button class="btn ghost sm" data-act="resetpw" data-id="${esc(id)}">סיסמה חדשה</button> <button class="btn bad sm" data-act="deluser" data-id="${esc(id)}">הסרה</button>`}` : '<span class="muted">מנהל עבודה</span>'}</td></tr>`).join("")}
     </tbody></table></div></div>`;
 }
 /* ---------- מסכי בעל האפליקציה ---------- */
@@ -602,6 +619,33 @@ function companyModal(c){
     <label class="ck"><input type="checkbox" id="ec-susp" ${co.suspended?"checked":""}> השהה את החברה (המנהלים והעובדים שלה לא יוכלו להיכנס)</label>
     <div class="row"><button class="btn" data-act="savecompany" data-id="${c}">שמירה</button><button class="btn ghost" data-act="close">ביטול</button>
     <button class="btn bad" data-act="delcompany" data-id="${c}" style="margin-inline-start:auto">מחיקת חברה</button></div>`);
+}
+/* הודעת ברוכים הבאים לעובד: פרטי כניסה, פרויקטים וקישור לאפליקציה */
+function waNumber(ph){ let d=String(ph||"").replace(/\D/g,""); if(d.startsWith("0")) d="972"+d.slice(1); return d; }
+function welcomeText(id){
+  const u = data.users[id]; if(!u) return "";
+  const mine = Object.entries(data.projects).filter(([,p])=>Object.values(p.assign||{}).includes(id)).map(([,p])=>p.name);
+  const projs = mine.length ? mine : (ui.pid && data.projects[ui.pid] ? [data.projects[ui.pid].name] : []);
+  const co = coName(u.company);
+  return `שלום ${u.name}, ברוך הבא${co?` לצוות של ${co}`:""}! 👷
+נפתח לך חשבון באפליקציית העובדים.
+${projs.length?`פרויקט: ${projs.join(", ")}\n`:""}מקצוע: ${tradeLabel(u.trade)}
+שם משתמש: ${id}
+סיסמה: ${creds[id]!=null?creds[id]:"(תקבל מהמנהל)"}
+
+כניסה לאפליקציה:
+${location.origin}/team
+
+להתקנה בטלפון: פתח את הקישור, ואז "הוסף למסך הבית" (באייפון דרך כפתור השיתוף, באנדרואיד דרך ⋮).`;
+}
+function welcomeModal(id, fresh){
+  const u = data.users[id]; if(!u) return;
+  const t = welcomeText(id), ph = u.phone;
+  openModal(`<h3>${fresh?"העובד נוסף ✓ ":""}שליחת פרטי כניסה ל${esc(u.name)}</h3>
+    <div class="smsbox" style="max-height:260px;overflow:auto">${esc(t)}</div>
+    ${ph?`<div class="muted">טלפון: <b class="mono">${esc(ph)}</b></div>`:`<div class="muted">אין מספר טלפון לעובד. אפשר להעתיק ולשלוח ידנית, או להוסיף טלפון ב"עריכה".</div>`}
+    <div class="row">${ph?`<a class="btn" href="${smsHref([ph], t)}">שלח SMS</a><a class="btn ghost" href="https://wa.me/${waNumber(ph)}?text=${encodeURIComponent(t)}" target="_blank" rel="noopener">שלח WhatsApp</a>`:`<a class="btn ghost" href="https://wa.me/?text=${encodeURIComponent(t)}" target="_blank" rel="noopener">שלח WhatsApp</a>`}
+    <button class="btn ghost" data-act="copy" data-text="${esc(t)}">העתק</button><button class="btn ghost" data-act="close">סגירה</button></div>`);
 }
 function exportCSV(){
   const p = project(), T = trades(), F = floorsList().slice().reverse();
@@ -763,23 +807,31 @@ document.addEventListener("click", async e=>{
       closeModal(); await put("users", id, upd); }
     if(a==="hidenotice"){ const n=document.getElementById("notice"); if(n) n.hidden=true; }
     if(a==="enablepush"){ el.disabled=true; el.textContent="רגע…";
-      const perm = await Notification.requestPermission();
-      if(perm==="granted"){ try{ await subscribePush(); showNotice('<div class="ntext"><b>✓ ההתראות פועלות</b><span>מעכשיו הודעות יקפצו בטלפון.</span></div>'); }catch(e){ showErr("לא הצלחנו להפעיל התראות. נסה שוב."); } }
-      else pushState="off";
-      render(); }
+      pushErr = "";
+      try{
+        const perm = Notification.permission==="granted" ? "granted" : await Notification.requestPermission();
+        if(perm!=="granted"){ pushState="off"; pushErr="ההרשאה לא אושרה"; render(); return; }
+        await subscribePush();
+        render();
+        const r = await fetch("/api/testpush",{method:"POST",headers:{"content-type":"application/json",authorization:"Bearer "+token},body:"{}"}).then(x=>x.json()).catch(()=>({}));
+        showNotice(`<div class="ntext"><b>✓ ההתראות פועלות</b><span>${r.ok?"שלחנו לך התראת בדיקה. היא אמורה לקפוץ עכשיו.":"נרשמת, אבל התראת הבדיקה לא נשלחה: "+esc(JSON.stringify(r.results||r))}</span></div><button class="nx" data-act="hidenotice">×</button>`);
+      }catch(e){ pushState="off"; pushErr=String(e.message||e); render(); showNotice(`<div class="ntext"><b>ההפעלה נכשלה</b><span>${esc(pushDiag())}</span></div><button class="nx" data-act="hidenotice">×</button>`); }
+      }
     if(a==="testpush"){ el.disabled=true; el.textContent="שולח…";
       const info = `מצב: ${standalone?"נפתח מהאייקון":"נפתח מדפדפן"} · הרשאה: ${"Notification" in window?Notification.permission:"אין"}`;
       try{
         const tp = () => fetch("/api/testpush",{method:"POST",headers:{"content-type":"application/json",authorization:"Bearer "+token},body:"{}"}).then(x=>x.json());
-        let r = await tp(), regErr = "";
-        if(!r.subs){ try{ await subscribePush(); r = await tp(); }catch(e){ regErr = String(e.message||e); } }
-        if(regErr){ showNotice(`<div class="ntext"><b>הרישום להתראות נכשל</b><span>${esc(regErr)} · ${esc(info)}</span></div><button class="nx" data-act="hidenotice">×</button>`); el.disabled=false; el.textContent="שלח לי התראת בדיקה"; return; }
+        let regErr = "";
+        try{ await subscribePush(); }catch(e){ regErr = String(e.message||e); }
+        let r = await tp();
+        if(regErr && !r.ok){ showNotice(`<div class="ntext"><b>הרישום להתראות נכשל</b><span>${esc(regErr)} · ${esc(info)}</span></div><button class="nx" data-act="hidenotice">×</button>`); el.disabled=false; el.textContent="שלח לי התראת בדיקה"; return; }
         if(r.ok) showNotice(`<div class="ntext"><b>✓ ההתראה נשלחה</b><span>אמורה לקפוץ תוך כמה שניות. נעל את המסך כדי לראות. ${esc(info)}</span></div><button class="nx" data-act="hidenotice">×</button>`);
         else if(!r.subs) showNotice(`<div class="ntext"><b>הטלפון הזה לא רשום להתראות</b><span>לחץ "הפעל התראות" ואשר. ${esc(info)}</span></div><button class="nx" data-act="hidenotice">×</button>`);
         else showNotice(`<div class="ntext"><b>השליחה נכשלה</b><span>${esc(JSON.stringify(r.results))} · ${esc(info)}</span></div><button class="nx" data-act="hidenotice">×</button>`);
       }catch(e){ showErr("אין חיבור לשרת"); }
       el.disabled=false; el.textContent="שלח לי התראת בדיקה"; }
     if(a==="exportcsv") exportCSV();
+    if(a==="welcome") welcomeModal(el.dataset.id, false);
     if(a==="gocompany"){ ui.cid=el.dataset.id; ls.set("siteboard-cid",ui.cid); scopeToCompany(); ui.pid=visibleProjects()[0]||""; ui.tab="board"; render(); scrollTo(0,0); }
     if(a==="addmgrfor"){ ui.cid=el.dataset.id; ls.set("siteboard-cid",ui.cid); scopeToCompany(); ui.pid=visibleProjects()[0]||""; ui.tab="workers"; render();
       const c=document.getElementById("addmgr-card"); if(c){ c.scrollIntoView({block:"start"}); document.getElementById("g-name").focus(); } }
@@ -795,8 +847,9 @@ document.addEventListener("click", async e=>{
     if(a==="delproj"){ if(el.dataset.confirm!=="1"){ el.dataset.confirm="1"; el.textContent="בטוח? כל ההתקדמות תימחק"; return; }
       await remove("projects", el.dataset.id); }
     if(a==="togglepw"){ ui.showPw = !ui.showPw; render(); }
-    if(a==="resetpw"){ const id=el.dataset.id, pw=String(Math.floor(1000+Math.random()*9000)), u=data.users[id];
+    if(a==="resetpw"){ const id=el.dataset.id, pw=String(Math.floor(1000+Math.random()*9000)), u=data.allUsers[id];
       await api("resetpw",{username:id,password:pw}); ui.showPw = true; render();
+      if(u.role==="worker"){ welcomeModal(id, false); return; }
       const t=`הסיסמה החדשה שלך: ${pw} (שם משתמש: ${id})`;
       openModal(`<h3>סיסמה חדשה ל${esc(u.name)}</h3><div class="smsbox mono">${esc(pw)}</div>
         <div class="row">${u.phone?`<a class="btn" href="${smsHref([u.phone], t)}">שלח לו ב-SMS</a>`:""}<button class="btn ghost" data-act="copy" data-text="${esc(t)}">העתק</button><button class="btn ghost" data-act="close">סגירה</button></div>`); }
@@ -819,8 +872,9 @@ document.addEventListener("submit", async e=>{
       await api("login",{username:v("l-user"),password:document.getElementById("l-pass").value,portal:PORTAL});
     }
     if(form==="adduser"){
-      await api("adduser",{name:v("u-name"),username:v("u-user"),password:v("u-pass"),phone:v("u-phone"),role:"worker",trade:v("u-trade"),company:myCompany()});
-      ui.err=""; render();
+      const un = v("u-user").toLowerCase();
+      await api("adduser",{name:v("u-name"),username:un,password:v("u-pass"),phone:v("u-phone"),role:"worker",trade:v("u-trade"),company:myCompany()});
+      ui.err=""; render(); welcomeModal(un, true);
     }
     if(form==="addmgr"){
       const nm=v("g-name"), un=v("g-user"), pw=v("g-pass");

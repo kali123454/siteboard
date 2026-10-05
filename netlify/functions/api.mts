@@ -41,11 +41,13 @@ async function sendPushes(s: State, items: { to: string; text: string }[]) {
   let dirty = false;
   const jobs: Promise<any>[] = [];
   for (const it of items) {
-    const ids = it.to.startsWith("mgr:") ? Object.keys(s.users).filter((id) => s.users[id].role === "manager" && s.users[id].company === it.to.slice(4)) : [it.to];
+    let ids = it.to.startsWith("mgr:") ? Object.keys(s.users).filter((id) => s.users[id].role === "manager" && s.users[id].company === it.to.slice(4)) : [it.to];
+    /* חברה בלי מנהל עבודה — ההתראה מגיעה לבעלי האפליקציה */
+    if (it.to.startsWith("mgr:") && !ids.length) ids = Object.keys(s.users).filter((id) => s.users[id].role === "owner");
     for (const id of ids) {
       const u = s.users[id];
       if (!u) continue;
-      const payload = JSON.stringify({ title: u.role === "worker" ? "עובדים" : "מנהלי עבודה", body: it.text, url: portalOf(u) });
+      const payload = JSON.stringify({ title: u.role === "worker" ? "עובדים" : u.role === "owner" ? "ניהול" : "מנהלי עבודה", body: it.text, url: portalOf(u) });
       for (const sub of s.subs[id] || []) {
         jobs.push(
           webpush.sendNotification(sub, payload, { TTL: 60 * 60 * 24 }).catch((e: any) => {
