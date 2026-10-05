@@ -164,7 +164,7 @@ function view(s: State, me: string | null) {
   const inCo = (c?: string) => owner || c === cid;
   const users: Record<string, any> = {};
   for (const [id, x] of Object.entries(s.users)) {
-    if (x.role === "owner" && id !== me) continue;
+    if (x.role === "owner" && id !== me && !owner) continue;
     if (x.role !== "owner" && !inCo(x.company)) continue;
     users[id] = { name: x.name, phone: x.phone || "", role: x.role, trade: x.trade || "", company: x.company || "" };
   }
@@ -181,7 +181,7 @@ function view(s: State, me: string | null) {
   if (u.role !== "worker") for (const id of Object.keys(users)) if (s.creds[id] != null && (owner || users[id].role === "worker" || id === me)) creds[id] = s.creds[id];
   const companies: Record<string, any> = {};
   for (const [c, x] of Object.entries(s.companies)) if (inCo(c)) companies[c] = owner ? x : { name: x.name };
-  return { ...base, me, role: u.role, company: cid, companies, projects, users, tasks, messages, creds, log: owner ? s.log.slice(-200) : [] };
+  return { ...base, me, role: u.role, mainOwner: owner ? s.owner : "", company: cid, companies, projects, users, tasks, messages, creds, log: owner ? s.log.slice(-200) : [] };
 }
 
 function pruneMessages(s: State) {
@@ -281,16 +281,17 @@ export default async (req: Request) => {
       if (route === "adduser") {
         if (!USER_RE.test(id)) return fail("שם משתמש: אותיות באנגלית, מספרים, נקודה או מקף");
         if (s.users[id]) return fail("שם המשתמש הזה כבר תפוס");
-        const role: Role = body.role === "manager" ? "manager" : "worker";
-        if (role === "manager" && !owner) return fail("רק בעל האפליקציה יכול להוסיף מנהלי עבודה", 403);
-        const company = owner ? String(body.company || "") : myCo;
-        if (!s.companies[company]) return fail("בחר חברה");
+        const role: Role = body.role === "owner" ? "owner" : body.role === "manager" ? "manager" : "worker";
+        if (role !== "worker" && !owner) return fail("רק בעל האפליקציה יכול להוסיף מנהלים", 403);
+        const company = role === "owner" ? "" : owner ? String(body.company || "") : myCo;
+        if (role !== "owner" && !s.companies[company]) return fail("בחר חברה");
         s.users[id] = { name: String(body.name || id).slice(0, 60), phone: String(body.phone || "").slice(0, 20), role, company, trade: role === "worker" ? String(body.trade || "") : "", created: Date.now(), ...hashPass(pw) };
-        addLog(s, u.name, company, `${role === "manager" ? "מנהל עבודה" : "עובד"} חדש: ${s.users[id].name}`);
+        if (role === "owner") delete s.users[id].company;
+        addLog(s, u.name, company, `${role === "owner" ? "מנהל מערכת" : role === "manager" ? "מנהל עבודה" : "עובד"} חדש: ${s.users[id].name}`);
       } else {
         const t = s.users[id];
         if (!t) return fail("משתמש לא נמצא", 404);
-        if (t.role === "owner" && id !== me) return fail("פעולה לא תקינה", 403);
+        if (id === s.owner && me !== s.owner) return fail("אי אפשר לשנות את בעל האפליקציה הראשי", 403);
         if (!owner && (t.company !== myCo || (t.role !== "worker" && id !== me))) return fail("אין לך הרשאה למשתמש הזה", 403);
         Object.assign(t, hashPass(pw));
         addLog(s, u.name, t.company || "", `סיסמה חדשה ל${t.name}`);
@@ -347,13 +348,14 @@ export default async (req: Request) => {
         const cur = s.users[id];
         if (!cur) return fail("משתמש לא נמצא", 404);
         if (!owner && (cur.company !== myCo || (cur.role !== "worker" && id !== me))) return fail("אין לך הרשאה למשתמש הזה", 403);
-        if (cur.role === "owner" && id !== me) return fail("פעולה לא תקינה", 403);
+        if (id === s.owner && me !== s.owner) return fail("אי אפשר לשנות את בעל האפליקציה הראשי", 403);
         if (route === "remove") {
           if (id === me) return fail("אי אפשר למחוק את עצמך");
+          if (id === s.owner) return fail("אי אפשר למחוק את בעל האפליקציה הראשי", 403);
           delete s.users[id];
           delete s.creds[id];
           delete s.subs[id];
-          addLog(s, u.name, cur.company || "", `${cur.role === "manager" ? "מנהל עבודה" : "עובד"} הוסר: ${cur.name}`);
+          addLog(s, u.name, cur.company || "", `${cur.role === "owner" ? "מנהל מערכת" : cur.role === "manager" ? "מנהל עבודה" : "עובד"} הוסר: ${cur.name}`);
         } else {
           if (!obj) return fail("משתמש לא נמצא", 404);
           s.users[id] = {

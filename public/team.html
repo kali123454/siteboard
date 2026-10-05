@@ -212,7 +212,7 @@ function apply(st){
   ui.me = st.me || null;
   data.allUsers = st.users || {}; data.tasks = st.tasks || {}; data.messages = st.messages || {};
   data.allProjects = st.projects || {}; creds = st.creds || {};
-  data.companies = st.companies || {}; data.log = st.log || [];
+  data.companies = st.companies || {}; data.log = st.log || []; data.mainOwner = st.mainOwner || "";
   scopeToCompany();
   const vis = visibleProjects();
   if(!vis.includes(ui.pid)) ui.pid = vis[0] || "";
@@ -565,7 +565,23 @@ function companiesView(){
       ${co.notes?`<p class="note">${esc(co.notes)}</p>`:""}
       <div class="cometa"><span>${st.projects} פרויקטים</span><span>${st.workers} עובדים</span><span>${st.pct}% הושלם</span></div>
       <div style="margin-top:10px"><b>מנהלי עבודה:</b> ${M.length?M.map(([id,u])=>`<span class="chip">${esc(u.name)} <span class="mono muted">@${esc(id)}</span></span>`).join(" "):'<span class="muted">אין עדיין</span>'}
-      <button class="btn ghost sm" data-act="addmgrfor" data-id="${c}">+ מנהל עבודה</button></div></div>`}).join("")}`;
+      <button class="btn ghost sm" data-act="addmgrfor" data-id="${c}">+ מנהל עבודה</button></div></div>`}).join("")}
+    ${adminsCard()}`;
+}
+function adminsCard(){
+  const A = Object.entries(data.allUsers).filter(([,u])=>u.role==="owner");
+  return `<div class="card" id="admins-card"><div class="row" style="justify-content:space-between;align-items:center"><h2 style="margin:0">מנהלי מערכת (${A.length})</h2>
+    <button class="btn ghost sm" data-act="togglepw">${ui.showPw?"הסתר סיסמאות":"הצג סיסמאות"}</button></div>
+    <p class="note">מנהל מערכת נכנס דרך /admin ורואה ומנהל הכל, כמוך: כל החברות, מנהלי עבודה, השהיה ויומן. רק את ${esc((data.allUsers[data.mainOwner]||{}).name||"בעל האפליקציה")} אי אפשר למחוק.</p>
+    <div class="list">${A.map(([id,u])=>`<div class="li"><div class="grow"><b>${esc(u.name)}</b> <span class="mono muted">@${esc(id)}</span>${id===data.mainOwner?' <span class="pill s-approved">ראשי</span>':""}
+      <div class="note">${u.phone?esc(u.phone)+" · ":""}סיסמה: <span class="mono" style="user-select:all">${creds[id]!=null?(ui.showPw?esc(creds[id]):"••••••"):"לא שמורה"}</span></div></div>
+      ${id===ui.me?'<span class="muted">זה אתה</span>':id===data.mainOwner?"":`<button class="btn ghost sm" data-act="resetpw" data-id="${esc(id)}">סיסמה חדשה</button><button class="btn bad sm" data-act="deluser" data-id="${esc(id)}">הסרה</button>`}</div>`).join("")}</div>
+    <form class="form" data-form="addadmin" style="margin-top:12px">
+      <label>שם מלא<input id="ad-name" required></label>
+      <label>טלפון<input id="ad-phone" type="tel" inputmode="tel" placeholder="050-0000000"></label>
+      <label>שם משתמש<input id="ad-user" required autocomplete="off"></label>
+      <label>סיסמה<input id="ad-pass" required minlength="4" autocomplete="off"></label>
+      <button class="btn">הוסף מנהל מערכת</button></form><div class="err">${esc(ui.err)}</div></div>`;
 }
 function logView(){
   const f = ui.logf || "all";
@@ -820,6 +836,13 @@ document.addEventListener("submit", async e=>{
       await put("companies", id, {name:v("nc-name"),contact:v("nc-contact"),phone:v("nc-phone"),plan:v("nc-plan"),payDate:v("nc-pay"),notes:"",suspended:false});
       ui.cid = id; ls.set("siteboard-cid",id); scopeToCompany(); render();
       showNotice(`<div class="ntext"><b>✓ החברה נוספה</b><span>עכשיו הוסף לה מנהל עבודה.</span></div><button class="btn ghost sm" data-act="addmgrfor" data-id="${id}">+ מנהל עבודה</button><button class="nx" data-act="hidenotice">×</button>`);
+    }
+    if(form==="addadmin"){
+      const nm=v("ad-name"), un=v("ad-user"), pw=v("ad-pass");
+      await api("adduser",{name:nm,username:un,password:pw,phone:v("ad-phone"),role:"owner"});
+      const t=`שלום ${nm}, נפתחה לך גישת ניהול ללוח עבודות.\nכניסה: ${location.origin}/admin\nשם משתמש: ${un.toLowerCase()}\nסיסמה: ${pw}`;
+      openModal(`<h3>מנהל המערכת נוסף ✓</h3><p style="margin:0">שלח לו את פרטי הכניסה:</p><div class="smsbox">${esc(t)}</div>
+        <div class="row"><a class="btn" href="https://wa.me/?text=${encodeURIComponent(t)}" target="_blank" rel="noopener">שלח ב-WhatsApp</a><button class="btn ghost" data-act="copy" data-text="${esc(t)}">העתק</button><button class="btn ghost" data-act="close">סגירה</button></div>`);
     }
     if(form==="bcastmgr"){
       const txt=v("bm-text"); if(!txt) return; const M=Object.entries(data.allUsers).filter(([,u])=>u.role==="manager");
